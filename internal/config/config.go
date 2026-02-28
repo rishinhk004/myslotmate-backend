@@ -11,9 +11,15 @@ type FirebaseConfig struct {
 	ProjectID       string
 }
 
+// DatabaseConfig holds PostgreSQL connection settings.
+type DatabaseConfig struct {
+	URL string // DATABASE_URL, Postgres connection string
+}
+
 type Config struct {
 	HTTPPort string
 	Firebase FirebaseConfig
+	Database DatabaseConfig
 }
 
 // Load reads configuration from environment variables (optionally via .env).
@@ -24,9 +30,11 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		HTTPPort: getEnv("HTTP_PORT", "8080"),
 		Firebase: FirebaseConfig{
-			// Defaults are convenient for local development; override via env in production.
 			CredentialsFile: getEnv("FIREBASE_CREDENTIALS_FILE", "config/firebase-service-account.json"),
 			ProjectID:       getEnv("FIREBASE_PROJECT_ID", "myslotmate-25994"),
+		},
+		Database: DatabaseConfig{
+			URL: getEnv("DATABASE_URL", ""),
 		},
 	}
 
