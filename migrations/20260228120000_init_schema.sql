@@ -1,26 +1,27 @@
 -- MySlotMate initial schema (PostgreSQL)
 -- Run via: docker compose run --rm migrate
+-- NOTE: This migration is idempotent – safe to re-run on a partially applied DB.
 
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- Enums
-CREATE TYPE account_owner_type AS ENUM ('user', 'host');
-CREATE TYPE booking_status AS ENUM ('pending', 'confirmed', 'cancelled', 'refunded');
-CREATE TYPE payment_type AS ENUM ('booking', 'withdrawal', 'refund', 'payout', 'topup');
-CREATE TYPE payment_status AS ENUM ('pending', 'completed', 'failed', 'reversed');
-CREATE TYPE support_ticket_status AS ENUM ('open', 'in_progress', 'resolved', 'closed');
-CREATE TYPE fraud_flag_type AS ENUM (
+-- Enums (wrapped to be idempotent)
+DO $$ BEGIN CREATE TYPE account_owner_type AS ENUM ('user', 'host'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE TYPE booking_status AS ENUM ('pending', 'confirmed', 'cancelled', 'refunded'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE TYPE payment_type AS ENUM ('booking', 'withdrawal', 'refund', 'payout', 'topup'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE TYPE payment_status AS ENUM ('pending', 'completed', 'failed', 'reversed'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE TYPE support_ticket_status AS ENUM ('open', 'in_progress', 'resolved', 'closed'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE TYPE fraud_flag_type AS ENUM (
   'abnormal_booking_spike',
   'payment_abuse',
   'suspicious_activity',
   'manual_block'
-);
+); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ---------------------------------------------------------------------------
 -- accounts (one per user – wallet + bank details)
 -- ---------------------------------------------------------------------------
-CREATE TABLE accounts (
+CREATE TABLE IF NOT EXISTS accounts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   owner_type account_owner_type NOT NULL,
   owner_id UUID NOT NULL,
@@ -31,12 +32,12 @@ CREATE TABLE accounts (
   CONSTRAINT uq_account_per_owner UNIQUE (owner_type, owner_id)
 );
 
-CREATE INDEX idx_accounts_owner ON accounts (owner_type, owner_id);
+CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts (owner_type, owner_id);
 
 -- ---------------------------------------------------------------------------
 -- users (anyone can register; is_verified required to become host)
 -- ---------------------------------------------------------------------------
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   auth_uid TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL DEFAULT '',
@@ -49,33 +50,47 @@ CREATE TABLE users (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE UNIQUE INDEX idx_users_auth_uid ON users (auth_uid);
-CREATE INDEX idx_users_account ON users (account_id);
-CREATE INDEX idx_users_verified ON users (is_verified);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_auth_uid ON users (auth_uid);
+CREATE INDEX IF NOT EXISTS idx_users_account ON users (account_id);
+CREATE INDEX IF NOT EXISTS idx_users_verified ON users (is_verified);
 
 -- ---------------------------------------------------------------------------
 -- hosts (verified users only; one host profile per user)
 -- ---------------------------------------------------------------------------
-CREATE TABLE hosts (
+CREATE TABLE IF NOT EXISTS hosts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL UNIQUE REFERENCES users (id) ON DELETE CASCADE,
   name TEXT NOT NULL DEFAULT '',
   phn_number TEXT NOT NULL DEFAULT '',
   account_id UUID REFERENCES accounts (id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT host_user_must_be_verified CHECK (
-    EXISTS (SELECT 1 FROM users u WHERE u.id = user_id AND u.is_verified = true)
-  )
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE UNIQUE INDEX idx_hosts_user_id ON hosts (user_id);
-CREATE INDEX idx_hosts_account ON hosts (account_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_hosts_user_id ON hosts (user_id);
+CREATE INDEX IF NOT EXISTS idx_hosts_account ON hosts (account_id);
+
+-- Enforce "user must be verified" via trigger (CHECK cannot contain subqueries)
+CREATE OR REPLACE FUNCTION check_host_user_verified()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM users u WHERE u.id = NEW.user_id AND u.is_verified = true) THEN
+    RAISE EXCEPTION 'user must be verified before becoming a host';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_host_user_must_be_verified ON hosts;
+CREATE TRIGGER trg_host_user_must_be_verified
+  BEFORE INSERT OR UPDATE ON hosts
+  FOR EACH ROW
+  EXECUTE PROCEDURE check_host_user_verified();
 
 -- ---------------------------------------------------------------------------
 -- events (created by hosts; capacity for overbooking prevention)
 -- ---------------------------------------------------------------------------
-CREATE TABLE events (
+CREATE TABLE IF NOT EXISTS events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   host_id UUID NOT NULL REFERENCES hosts (id) ON DELETE CASCADE,
   name TEXT NOT NULL,
@@ -87,13 +102,13 @@ CREATE TABLE events (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_events_host ON events (host_id);
-CREATE INDEX idx_events_time ON events ("time");
+CREATE INDEX IF NOT EXISTS idx_events_host ON events (host_id);
+CREATE INDEX IF NOT EXISTS idx_events_time ON events ("time");
 
 -- ---------------------------------------------------------------------------
 -- bookings (user books event; status + quantity; overbooking enforced in app)
 -- ---------------------------------------------------------------------------
-CREATE TABLE bookings (
+CREATE TABLE IF NOT EXISTS bookings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   event_id UUID NOT NULL REFERENCES events (id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
@@ -106,10 +121,10 @@ CREATE TABLE bookings (
   cancelled_at TIMESTAMPTZ
 );
 
-CREATE INDEX idx_bookings_event ON bookings (event_id);
-CREATE INDEX idx_bookings_user ON bookings (user_id);
-CREATE INDEX idx_bookings_status ON bookings (event_id, status);
-CREATE UNIQUE INDEX idx_bookings_idempotency ON bookings (idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_bookings_event ON bookings (event_id);
+CREATE INDEX IF NOT EXISTS idx_bookings_user ON bookings (user_id);
+CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings (event_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_idempotency ON bookings (idempotency_key) WHERE idempotency_key IS NOT NULL;
 
 -- Add FK to payments after payments table exists (see below)
 -- ALTER TABLE bookings ADD CONSTRAINT fk_bookings_payment FOREIGN KEY (payment_id) REFERENCES payments (id);
@@ -117,7 +132,7 @@ CREATE UNIQUE INDEX idx_bookings_idempotency ON bookings (idempotency_key) WHERE
 -- ---------------------------------------------------------------------------
 -- reviews (per event; AI sentiment + host replies)
 -- ---------------------------------------------------------------------------
-CREATE TABLE reviews (
+CREATE TABLE IF NOT EXISTS reviews (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   event_id UUID NOT NULL REFERENCES events (id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
@@ -129,13 +144,13 @@ CREATE TABLE reviews (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_reviews_event ON reviews (event_id);
-CREATE INDEX idx_reviews_user ON reviews (user_id);
+CREATE INDEX IF NOT EXISTS idx_reviews_event ON reviews (event_id);
+CREATE INDEX IF NOT EXISTS idx_reviews_user ON reviews (user_id);
 
 -- ---------------------------------------------------------------------------
 -- payments (idempotency, retry, status)
 -- ---------------------------------------------------------------------------
-CREATE TABLE payments (
+CREATE TABLE IF NOT EXISTS payments (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   idempotency_key TEXT NOT NULL UNIQUE,
   account_id UUID NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
@@ -149,18 +164,21 @@ CREATE TABLE payments (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_payments_account ON payments (account_id);
-CREATE INDEX idx_payments_status ON payments (status);
-CREATE UNIQUE INDEX idx_payments_idempotency ON payments (idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_payments_account ON payments (account_id);
+CREATE INDEX IF NOT EXISTS idx_payments_status ON payments (status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_idempotency ON payments (idempotency_key);
 
 -- Link bookings.payment_id to payments
-ALTER TABLE bookings
-  ADD CONSTRAINT fk_bookings_payment FOREIGN KEY (payment_id) REFERENCES payments (id) ON DELETE SET NULL;
+DO $$ BEGIN
+  ALTER TABLE bookings
+    ADD CONSTRAINT fk_bookings_payment FOREIGN KEY (payment_id) REFERENCES payments (id) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- inbox_messages (host broadcasts per event)
 -- ---------------------------------------------------------------------------
-CREATE TABLE inbox_messages (
+CREATE TABLE IF NOT EXISTS inbox_messages (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   event_id UUID NOT NULL REFERENCES events (id) ON DELETE CASCADE,
   host_id UUID NOT NULL REFERENCES hosts (id) ON DELETE CASCADE,
@@ -168,13 +186,13 @@ CREATE TABLE inbox_messages (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_inbox_messages_host ON inbox_messages (host_id);
-CREATE INDEX idx_inbox_messages_event ON inbox_messages (event_id);
+CREATE INDEX IF NOT EXISTS idx_inbox_messages_host ON inbox_messages (host_id);
+CREATE INDEX IF NOT EXISTS idx_inbox_messages_event ON inbox_messages (event_id);
 
 -- ---------------------------------------------------------------------------
 -- support_tickets (host/user ↔ support)
 -- ---------------------------------------------------------------------------
-CREATE TABLE support_tickets (
+CREATE TABLE IF NOT EXISTS support_tickets (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
   subject TEXT NOT NULL,
@@ -184,13 +202,13 @@ CREATE TABLE support_tickets (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_support_tickets_user ON support_tickets (user_id);
-CREATE INDEX idx_support_tickets_status ON support_tickets (status);
+CREATE INDEX IF NOT EXISTS idx_support_tickets_user ON support_tickets (user_id);
+CREATE INDEX IF NOT EXISTS idx_support_tickets_status ON support_tickets (status);
 
 -- ---------------------------------------------------------------------------
 -- fraud_flags (block / flag suspicious users)
 -- ---------------------------------------------------------------------------
-CREATE TABLE fraud_flags (
+CREATE TABLE IF NOT EXISTS fraud_flags (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
   type fraud_flag_type NOT NULL,
@@ -200,8 +218,8 @@ CREATE TABLE fraud_flags (
   is_active BOOLEAN NOT NULL DEFAULT true
 );
 
-CREATE INDEX idx_fraud_flags_user ON fraud_flags (user_id);
-CREATE INDEX idx_fraud_flags_active ON fraud_flags (user_id, is_active) WHERE is_active = true;
+CREATE INDEX IF NOT EXISTS idx_fraud_flags_user ON fraud_flags (user_id);
+CREATE INDEX IF NOT EXISTS idx_fraud_flags_active ON fraud_flags (user_id, is_active) WHERE is_active = true;
 
 -- ---------------------------------------------------------------------------
 -- event_reviews (optional: denormalized list of review ids on event for quick access)
@@ -228,7 +246,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS accounts_updated_at ON accounts;
 CREATE TRIGGER accounts_updated_at BEFORE UPDATE ON accounts FOR EACH ROW EXECUTE PROCEDURE set_updated_at();
+DROP TRIGGER IF EXISTS users_updated_at ON users;
 CREATE TRIGGER users_updated_at BEFORE UPDATE ON users FOR EACH ROW EXECUTE PROCEDURE set_updated_at();
 
 -- Auto-create account (wallet) for each new user
@@ -246,6 +266,7 @@ BEGIN
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS create_account_on_user_insert ON users;
 CREATE TRIGGER create_account_on_user_insert
   BEFORE INSERT ON users
   FOR EACH ROW
@@ -265,13 +286,20 @@ BEGIN
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS create_account_on_host_insert ON hosts;
 CREATE TRIGGER create_account_on_host_insert
   BEFORE INSERT ON hosts
   FOR EACH ROW
   EXECUTE PROCEDURE create_host_account();
+DROP TRIGGER IF EXISTS hosts_updated_at ON hosts;
 CREATE TRIGGER hosts_updated_at BEFORE UPDATE ON hosts FOR EACH ROW EXECUTE PROCEDURE set_updated_at();
+DROP TRIGGER IF EXISTS events_updated_at ON events;
 CREATE TRIGGER events_updated_at BEFORE UPDATE ON events FOR EACH ROW EXECUTE PROCEDURE set_updated_at();
+DROP TRIGGER IF EXISTS bookings_updated_at ON bookings;
 CREATE TRIGGER bookings_updated_at BEFORE UPDATE ON bookings FOR EACH ROW EXECUTE PROCEDURE set_updated_at();
+DROP TRIGGER IF EXISTS reviews_updated_at ON reviews;
 CREATE TRIGGER reviews_updated_at BEFORE UPDATE ON reviews FOR EACH ROW EXECUTE PROCEDURE set_updated_at();
+DROP TRIGGER IF EXISTS payments_updated_at ON payments;
 CREATE TRIGGER payments_updated_at BEFORE UPDATE ON payments FOR EACH ROW EXECUTE PROCEDURE set_updated_at();
+DROP TRIGGER IF EXISTS support_tickets_updated_at ON support_tickets;
 CREATE TRIGGER support_tickets_updated_at BEFORE UPDATE ON support_tickets FOR EACH ROW EXECUTE PROCEDURE set_updated_at();

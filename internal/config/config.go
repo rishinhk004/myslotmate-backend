@@ -16,10 +16,18 @@ type DatabaseConfig struct {
 	URL string // DATABASE_URL, Postgres connection string
 }
 
+type SetuConfig struct {
+	BaseURL           string
+	ClientID          string
+	ClientSecret      string
+	ProductInstanceID string
+}
+
 type Config struct {
 	HTTPPort string
 	Firebase FirebaseConfig
 	Database DatabaseConfig
+	Setu     SetuConfig
 }
 
 // Load reads configuration from environment variables (optionally via .env).
@@ -36,6 +44,12 @@ func Load() (*Config, error) {
 		Database: DatabaseConfig{
 			URL: getEnv("DATABASE_URL", ""),
 		},
+		Setu: SetuConfig{
+			BaseURL:           getEnv("SETU_BASE_URL", "https://uat.setu.co"),
+			ClientID:          getEnv("SETU_CLIENT_ID", ""),
+			ClientSecret:      getEnv("SETU_CLIENT_SECRET", ""),
+			ProductInstanceID: getEnv("SETU_PRODUCT_INSTANCE_ID", ""),
+		},
 	}
 
 	return cfg, nil
@@ -47,4 +61,3 @@ func getEnv(key, fallback string) string {
 	}
 	return fallback
 }
-

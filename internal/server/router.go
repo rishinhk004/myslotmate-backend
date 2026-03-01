@@ -6,37 +6,61 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"myslotmate-backend/internal/auth"
+	"myslotmate-backend/internal/controller"
 	"myslotmate-backend/internal/firebase"
+	"myslotmate-backend/internal/lib/realtime"
 )
 
 // NewRouter builds the HTTP router with all routes and middleware wired.
-func NewRouter(fbApp *firebase.App) http.Handler {
+func NewRouter(
+	fbApp *firebase.App,
+	socketService *realtime.SocketService,
+	userCtrl *controller.UserController,
+	hostCtrl *controller.HostController,
+	eventCtrl *controller.EventController,
+	bookingCtrl *controller.BookingController,
+	reviewCtrl *controller.ReviewController,
+	inboxCtrl *controller.InboxController,
+) http.Handler {
 	r := chi.NewRouter()
 
-	// Generic middleware.
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	// Health check.
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	r.Get("/rishi", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("Hello Rishi"))
-	})
+	if socketService != nil {
+		r.Handle("/socket.io/*", socketService.GetServer())
+	}
 
-	// Auth routes.
-	authHandler := auth.NewHandler(fbApp.Auth)
+	if userCtrl != nil {
+		userCtrl.RegisterRoutes(r)
+	}
 
-	r.Route("/auth", func(r chi.Router) {
-		r.Post("/signUp", authHandler.VerifyIDToken)
-	})
+	if hostCtrl != nil {
+		hostCtrl.RegisterRoutes(r)
+	}
+
+	if eventCtrl != nil {
+		eventCtrl.RegisterRoutes(r)
+	}
+
+	if bookingCtrl != nil {
+		bookingCtrl.RegisterRoutes(r)
+	}
+
+	if reviewCtrl != nil {
+		reviewCtrl.RegisterRoutes(r)
+	}
+
+	if inboxCtrl != nil {
+		inboxCtrl.RegisterRoutes(r)
+	}
 
 	return r
 }

@@ -2,12 +2,12 @@
 -- Supports: earnings summary, platform fee breakdown, payout methods, payout history
 
 -- Payout method type
-CREATE TYPE payout_method_type AS ENUM ('bank', 'upi');
+DO $$ BEGIN CREATE TYPE payout_method_type AS ENUM ('bank', 'upi'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ---------------------------------------------------------------------------
 -- platform_settings (fee config for earnings breakdown)
 -- ---------------------------------------------------------------------------
-CREATE TABLE platform_settings (
+CREATE TABLE IF NOT EXISTS platform_settings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   key TEXT NOT NULL UNIQUE,
   value JSONB NOT NULL DEFAULT '{}',
@@ -23,7 +23,7 @@ ON CONFLICT (key) DO NOTHING;
 -- ---------------------------------------------------------------------------
 -- payout_methods (bank accounts, UPI – multiple per host)
 -- ---------------------------------------------------------------------------
-CREATE TABLE payout_methods (
+CREATE TABLE IF NOT EXISTS payout_methods (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   host_id UUID NOT NULL REFERENCES hosts (id) ON DELETE CASCADE,
   type payout_method_type NOT NULL,
@@ -47,13 +47,13 @@ CREATE TABLE payout_methods (
   )
 );
 
-CREATE INDEX idx_payout_methods_host ON payout_methods (host_id);
-CREATE INDEX idx_payout_methods_primary ON payout_methods (host_id, is_primary) WHERE is_primary = true;
+CREATE INDEX IF NOT EXISTS idx_payout_methods_host ON payout_methods (host_id);
+CREATE INDEX IF NOT EXISTS idx_payout_methods_primary ON payout_methods (host_id, is_primary) WHERE is_primary = true;
 
 -- ---------------------------------------------------------------------------
 -- host_earnings (aggregate earnings per host)
 -- ---------------------------------------------------------------------------
-CREATE TABLE host_earnings (
+CREATE TABLE IF NOT EXISTS host_earnings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   host_id UUID NOT NULL UNIQUE REFERENCES hosts (id) ON DELETE CASCADE,
   total_earnings_cents BIGINT NOT NULL DEFAULT 0 CHECK (total_earnings_cents >= 0),
@@ -63,7 +63,7 @@ CREATE TABLE host_earnings (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE UNIQUE INDEX idx_host_earnings_host ON host_earnings (host_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_host_earnings_host ON host_earnings (host_id);
 
 -- Auto-create host_earnings when host is created
 CREATE OR REPLACE FUNCTION create_host_earnings()
@@ -75,6 +75,7 @@ BEGIN
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS create_earnings_on_host_insert ON hosts;
 CREATE TRIGGER create_earnings_on_host_insert
   AFTER INSERT ON hosts
   FOR EACH ROW
@@ -85,7 +86,7 @@ CREATE TRIGGER create_earnings_on_host_insert
 -- ---------------------------------------------------------------------------
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS payout_method_id UUID REFERENCES payout_methods (id) ON DELETE SET NULL;
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS display_reference TEXT;  -- e.g. TXN-88234
-CREATE INDEX idx_payments_payout_method ON payments (payout_method_id) WHERE payout_method_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_payments_payout_method ON payments (payout_method_id) WHERE payout_method_id IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- Extend bookings for platform fee breakdown (amount, service_fee, net_earning)
@@ -97,6 +98,9 @@ ALTER TABLE bookings ADD COLUMN IF NOT EXISTS net_earning_cents BIGINT;     -- h
 -- ---------------------------------------------------------------------------
 -- Triggers
 -- ---------------------------------------------------------------------------
+DROP TRIGGER IF EXISTS platform_settings_updated_at ON platform_settings;
 CREATE TRIGGER platform_settings_updated_at BEFORE UPDATE ON platform_settings FOR EACH ROW EXECUTE PROCEDURE set_updated_at();
+DROP TRIGGER IF EXISTS payout_methods_updated_at ON payout_methods;
 CREATE TRIGGER payout_methods_updated_at BEFORE UPDATE ON payout_methods FOR EACH ROW EXECUTE PROCEDURE set_updated_at();
+DROP TRIGGER IF EXISTS host_earnings_updated_at ON host_earnings;
 CREATE TRIGGER host_earnings_updated_at BEFORE UPDATE ON host_earnings FOR EACH ROW EXECUTE PROCEDURE set_updated_at();

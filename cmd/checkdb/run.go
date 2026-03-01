@@ -1,24 +1,21 @@
 // checkdb connects to the database and runs a simple query to verify it works.
-// Run: go run ./cmd/checkdb
 package main
 
 import (
 	"context"
 	"fmt"
 	"log"
+	"myslotmate-backend/internal/config"
+	"myslotmate-backend/internal/db"
 	"time"
 
 	"github.com/joho/godotenv"
-
-	"myslotmate-backend/internal/config"
-	"myslotmate-backend/internal/db"
 )
 
 func main() {
 	// 1️⃣ Load .env FIRST
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("❌ .env file not found in project root")
+	if err := godotenv.Load(); err != nil {
+		log.Println("⚠️ .env file not found, relying on environment variables")
 	}
 
 	// 2️⃣ Load config (now env vars exist)

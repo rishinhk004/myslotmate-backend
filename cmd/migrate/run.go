@@ -48,6 +48,17 @@ func main() {
 	}
 	defer sqlDB.Close()
 
+	// Ensure tracking table exists
+	_, err = sqlDB.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version TEXT PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+	`)
+	if err != nil {
+		log.Fatalf("cannot create schema_migrations table: %v", err)
+	}
+
 	migrationsDir := "migrations"
 	if d := os.Getenv("MIGRATIONS_DIR"); d != "" {
 		migrationsDir = d
@@ -71,9 +82,37 @@ func main() {
 		return
 	}
 
-	log.Printf("running %d migration(s)...", len(files))
+	// Load already-applied migrations
+	applied := make(map[string]bool)
+	rows, err := sqlDB.QueryContext(ctx, "SELECT version FROM schema_migrations")
+	if err != nil {
+		log.Fatalf("cannot query schema_migrations: %v", err)
+	}
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			log.Fatalf("scan error: %v", err)
+		}
+		applied[v] = true
+	}
+	rows.Close()
 
-	for _, name := range files {
+	// Filter to pending migrations
+	var pending []string
+	for _, f := range files {
+		if !applied[f] {
+			pending = append(pending, f)
+		}
+	}
+
+	if len(pending) == 0 {
+		fmt.Println("No pending migrations.")
+		return
+	}
+
+	log.Printf("running %d migration(s)...", len(pending))
+
+	for _, name := range pending {
 		path := filepath.Join(migrationsDir, name)
 		content, err := os.ReadFile(path)
 		if err != nil {
@@ -85,6 +124,13 @@ func main() {
 		_, err = sqlDB.ExecContext(ctx, string(content))
 		if err != nil {
 			log.Fatalf("migration %s failed: %v", name, err)
+		}
+
+		// Record as applied
+		_, err = sqlDB.ExecContext(ctx,
+			"INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING", name)
+		if err != nil {
+			log.Fatalf("cannot record migration %s: %v", name, err)
 		}
 	}
 
