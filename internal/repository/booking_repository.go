@@ -13,6 +13,7 @@ type BookingRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*models.Booking, error)
 	ListByUserID(ctx context.Context, userID uuid.UUID) ([]*models.Booking, error)
 	GetTotalBookedQuantity(ctx context.Context, eventID uuid.UUID) (int, error)
+	UpdateStatus(ctx context.Context, id uuid.UUID, status models.BookingStatus) error
 }
 
 type postgresBookingRepository struct {
@@ -78,4 +79,13 @@ func (r *postgresBookingRepository) GetTotalBookedQuantity(ctx context.Context, 
 	var total int
 	err := r.db.QueryRowContext(ctx, query, eventID).Scan(&total)
 	return total, err
+}
+
+func (r *postgresBookingRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status models.BookingStatus) error {
+	query := `UPDATE bookings SET status = $1 WHERE id = $2`
+	if status == models.BookingStatusCancelled {
+		query = `UPDATE bookings SET status = $1, cancelled_at = NOW() WHERE id = $2`
+	}
+	_, err := r.db.ExecContext(ctx, query, status, id)
+	return err
 }

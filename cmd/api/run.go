@@ -15,6 +15,7 @@ import (
 	cfgfirebase "myslotmate-backend/internal/firebase"
 	"myslotmate-backend/internal/lib/event"
 	"myslotmate-backend/internal/lib/identity"
+	"myslotmate-backend/internal/lib/payout"
 	"myslotmate-backend/internal/lib/realtime"
 	"myslotmate-backend/internal/lib/worker"
 	"myslotmate-backend/internal/repository"
@@ -73,6 +74,9 @@ func main() {
 	bookingRepo := repository.NewBookingRepository(dbConn)
 	reviewRepo := repository.NewReviewRepository(dbConn)
 	inboxRepo := repository.NewInboxRepository(dbConn)
+	accountRepo := repository.NewAccountRepository(dbConn)
+	paymentRepo := repository.NewPaymentRepository(dbConn)
+	payoutRepo := repository.NewPayoutRepository(dbConn)
 
 	// Strategy Pattern: Identity Provider
 	aadharProvider := identity.NewSetuAadharProvider(identity.SetuConfig{
@@ -86,9 +90,22 @@ func main() {
 	userService := service.NewUserService(userRepo, workerPool, dispatcher, aadharProvider)
 	hostService := service.NewHostService(hostRepo, userRepo, dispatcher)
 	eventService := service.NewEventService(eventRepo, dispatcher)
-	bookingService := service.NewBookingService(bookingRepo, eventRepo, dispatcher)
+	bookingService := service.NewBookingService(bookingRepo, eventRepo, accountRepo, paymentRepo, payoutRepo, hostRepo, dispatcher)
 	reviewService := service.NewReviewService(reviewRepo, dispatcher)
 	inboxService := service.NewInboxService(inboxRepo, eventRepo, socketService)
+
+	// Strategy Pattern: Payout Provider (Razorpay)
+	if cfg.Razorpay.KeyID == "" || cfg.Razorpay.KeySecret == "" {
+		log.Fatalf("Razorpay credentials (RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET) are required")
+	}
+	payoutProvider := payout.NewRazorpayProvider(payout.RazorpayConfig{
+		KeyID:         cfg.Razorpay.KeyID,
+		KeySecret:     cfg.Razorpay.KeySecret,
+		AccountNumber: cfg.Razorpay.AccountNumber,
+		WebhookSecret: cfg.Razorpay.WebhookSecret,
+	})
+	log.Println("Using Razorpay Payout Provider")
+	payoutService := service.NewPayoutService(payoutRepo, accountRepo, paymentRepo, hostRepo, payoutProvider, dispatcher)
 
 	userController := controller.NewUserController(userService)
 	hostController := controller.NewHostController(hostService)
@@ -96,6 +113,8 @@ func main() {
 	bookingController := controller.NewBookingController(bookingService)
 	reviewController := controller.NewReviewController(reviewService)
 	inboxController := controller.NewInboxController(inboxService)
+	payoutController := controller.NewPayoutController(payoutService)
+	webhookController := controller.NewWebhookController(payoutService, payoutProvider)
 
 	router := server.NewRouter(
 		fbApp,
@@ -106,6 +125,8 @@ func main() {
 		bookingController,
 		reviewController,
 		inboxController,
+		payoutController,
+		webhookController,
 	)
 
 	srv := &http.Server{

@@ -23,11 +23,20 @@ type SetuConfig struct {
 	ProductInstanceID string
 }
 
+// RazorpayConfig holds RazorpayX Payouts API credentials.
+type RazorpayConfig struct {
+	KeyID         string
+	KeySecret     string
+	AccountNumber string
+	WebhookSecret string
+}
+
 type Config struct {
 	HTTPPort string
 	Firebase FirebaseConfig
 	Database DatabaseConfig
 	Setu     SetuConfig
+	Razorpay RazorpayConfig
 }
 
 // Load reads configuration from environment variables (optionally via .env).
@@ -49,6 +58,12 @@ func Load() (*Config, error) {
 			ClientID:          getEnv("SETU_CLIENT_ID", ""),
 			ClientSecret:      getEnv("SETU_CLIENT_SECRET", ""),
 			ProductInstanceID: getEnv("SETU_PRODUCT_INSTANCE_ID", ""),
+		},
+		Razorpay: RazorpayConfig{
+			KeyID:         getEnv("RAZORPAY_KEY_ID", ""),
+			KeySecret:     getEnv("RAZORPAY_KEY_SECRET", ""),
+			AccountNumber: getEnv("RAZORPAY_ACCOUNT_NUMBER", ""),
+			WebhookSecret: getEnv("RAZORPAY_WEBHOOK_SECRET", ""),
 		},
 	}
 

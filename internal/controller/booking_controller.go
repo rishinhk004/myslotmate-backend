@@ -21,14 +21,17 @@ func NewBookingController(s service.BookingService) *BookingController {
 func (c *BookingController) RegisterRoutes(r chi.Router) {
 	r.Route("/bookings", func(r chi.Router) {
 		r.Post("/", c.CreateBooking)
+		r.Post("/{bookingID}/confirm", c.ConfirmBooking)
+		r.Post("/{bookingID}/cancel", c.CancelBooking)
 		r.Get("/user/{userID}", c.GetUserBookings)
 	})
 }
 
 type CreateBookingRequest struct {
-	UserID   uuid.UUID `json:"user_id"` // From Auth
-	EventID  uuid.UUID `json:"event_id"`
-	Quantity int       `json:"quantity"`
+	UserID         uuid.UUID `json:"user_id"` // From Auth
+	EventID        uuid.UUID `json:"event_id"`
+	Quantity       int       `json:"quantity"`
+	IdempotencyKey string    `json:"idempotency_key,omitempty"`
 }
 
 func (c *BookingController) CreateBooking(w http.ResponseWriter, r *http.Request) {
@@ -39,8 +42,9 @@ func (c *BookingController) CreateBooking(w http.ResponseWriter, r *http.Request
 	}
 
 	svcReq := service.BookingCreateRequest{
-		EventID:  req.EventID,
-		Quantity: req.Quantity,
+		EventID:        req.EventID,
+		Quantity:       req.Quantity,
+		IdempotencyKey: req.IdempotencyKey,
 	}
 
 	booking, err := c.bookingService.CreateBooking(r.Context(), req.UserID, svcReq)
@@ -67,4 +71,44 @@ func (c *BookingController) GetUserBookings(w http.ResponseWriter, r *http.Reque
 	}
 
 	RespondSuccess(w, http.StatusOK, bookings)
+}
+
+func (c *BookingController) ConfirmBooking(w http.ResponseWriter, r *http.Request) {
+	bookingID, err := uuid.Parse(chi.URLParam(r, "bookingID"))
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid booking ID")
+		return
+	}
+
+	booking, err := c.bookingService.ConfirmBooking(r.Context(), bookingID)
+	if err != nil {
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	RespondSuccess(w, http.StatusOK, booking)
+}
+
+func (c *BookingController) CancelBooking(w http.ResponseWriter, r *http.Request) {
+	bookingID, err := uuid.Parse(chi.URLParam(r, "bookingID"))
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid booking ID")
+		return
+	}
+
+	var body struct {
+		UserID uuid.UUID `json:"user_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	booking, err := c.bookingService.CancelBooking(r.Context(), bookingID, body.UserID)
+	if err != nil {
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	RespondSuccess(w, http.StatusOK, booking)
 }

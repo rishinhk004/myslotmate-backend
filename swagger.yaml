@@ -1,0 +1,1459 @@
+openapi: "3.0.3"
+info:
+  title: MySlotMate API
+  description: |
+    Backend API for **MySlotMate** – a slot-booking platform with wallet-based payments,
+    Razorpay payouts, Aadhar (Setu OKYC) verification, and real-time inbox broadcasting.
+
+    Every response follows the standard envelope:
+    ```json
+    { "success": true|false, "data": ..., "message": "...", "error": "..." }
+    ```
+  version: "1.0.0"
+
+servers:
+  - url: http://localhost:{port}
+    description: Local development
+    variables:
+      port:
+        default: "8080"
+
+tags:
+  - name: Health
+    description: Server health check
+  - name: Auth
+    description: User sign-up & Aadhar verification
+  - name: Hosts
+    description: Host creation & lookup
+  - name: Events
+    description: Event management
+  - name: Bookings
+    description: Booking lifecycle (create → confirm → cancel)
+  - name: Payouts
+    description: Payout methods, withdrawal, earnings & history
+  - name: Reviews
+    description: Event reviews
+  - name: Inbox
+    description: Host broadcast messages
+  - name: Webhooks
+    description: Razorpay payout webhook receiver
+
+# ──────────────────────────────────────────────
+# PATHS
+# ──────────────────────────────────────────────
+paths:
+  # ── Health ──────────────────────────────────
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      operationId: healthCheck
+      responses:
+        "200":
+          description: Server is healthy
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+
+  # ── Auth / Users ────────────────────────────
+  /auth/signup:
+    post:
+      tags: [Auth]
+      summary: Register a new user
+      operationId: signUp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserSignUpRequest"
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: User already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /auth/verify-aadhar/init:
+    post:
+      tags: [Auth]
+      summary: Initiate Aadhar OKYC verification
+      operationId: initiateAadhar
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InitiateAadharRequest"
+      responses:
+        "200":
+          description: OTP sent — returns transaction ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_AadharInit"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /auth/verify-aadhar/complete:
+    post:
+      tags: [Auth]
+      summary: Complete Aadhar verification with OTP
+      operationId: completeAadhar
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompleteAadharRequest"
+      responses:
+        "200":
+          description: Verification successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Message"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Hosts ───────────────────────────────────
+  /hosts/:
+    post:
+      tags: [Hosts]
+      summary: Create a host profile
+      operationId: createHost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateHostRequest"
+      responses:
+        "201":
+          description: Host created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Host"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /hosts/me:
+    get:
+      tags: [Hosts]
+      summary: Get host profile for the current user
+      operationId: getMyHost
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The user's UUID
+      responses:
+        "200":
+          description: Host profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Host"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Events ──────────────────────────────────
+  /events/:
+    post:
+      tags: [Events]
+      summary: Create a new event
+      operationId: createEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEventRequest"
+      responses:
+        "201":
+          description: Event created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Event"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /events/host/{hostID}:
+    get:
+      tags: [Events]
+      summary: List all events for a host
+      operationId: getEventsByHost
+      parameters:
+        - $ref: "#/components/parameters/HostIDPath"
+      responses:
+        "200":
+          description: Array of events
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_EventList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Bookings ────────────────────────────────
+  /bookings/:
+    post:
+      tags: [Bookings]
+      summary: Create a booking (status = pending)
+      operationId: createBooking
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBookingRequest"
+      responses:
+        "201":
+          description: Booking created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Booking"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /bookings/{bookingID}/confirm:
+    post:
+      tags: [Bookings]
+      summary: Confirm a pending booking
+      operationId: confirmBooking
+      parameters:
+        - $ref: "#/components/parameters/BookingIDPath"
+      responses:
+        "200":
+          description: Booking confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Booking"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /bookings/{bookingID}/cancel:
+    post:
+      tags: [Bookings]
+      summary: Cancel a booking and trigger refund
+      operationId: cancelBooking
+      parameters:
+        - $ref: "#/components/parameters/BookingIDPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          description: Booking cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Booking"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /bookings/user/{userID}:
+    get:
+      tags: [Bookings]
+      summary: List bookings for a user
+      operationId: getBookingsByUser
+      parameters:
+        - $ref: "#/components/parameters/UserIDPath"
+      responses:
+        "200":
+          description: Array of bookings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_BookingList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Payout Methods ─────────────────────────
+  /payouts/methods:
+    post:
+      tags: [Payouts]
+      summary: Add a payout method (bank account or UPI)
+      operationId: addPayoutMethod
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddPayoutMethodRequest"
+      responses:
+        "201":
+          description: Payout method created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_PayoutMethod"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /payouts/methods/{hostID}:
+    get:
+      tags: [Payouts]
+      summary: List payout methods for a host
+      operationId: getPayoutMethods
+      parameters:
+        - $ref: "#/components/parameters/HostIDPath"
+      responses:
+        "200":
+          description: Array of payout methods
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_PayoutMethodList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /payouts/methods/{methodID}/primary:
+    put:
+      tags: [Payouts]
+      summary: Set a payout method as primary
+      operationId: setPrimaryPayoutMethod
+      parameters:
+        - $ref: "#/components/parameters/MethodIDPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [host_id]
+              properties:
+                host_id:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          description: Primary method updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Message"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /payouts/methods/{methodID}:
+    delete:
+      tags: [Payouts]
+      summary: Delete a payout method
+      operationId: deletePayoutMethod
+      parameters:
+        - $ref: "#/components/parameters/MethodIDPath"
+        - name: host_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The host's UUID (ownership check)
+      responses:
+        "200":
+          description: Method deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Message"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Withdrawal ──────────────────────────────
+  /payouts/withdraw:
+    post:
+      tags: [Payouts]
+      summary: Request a payout withdrawal (Razorpay)
+      operationId: withdraw
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WithdrawalRequest"
+      responses:
+        "201":
+          description: Withdrawal initiated — payment record returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Payment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Earnings & History ──────────────────────
+  /payouts/earnings/{hostID}:
+    get:
+      tags: [Payouts]
+      summary: Get earnings summary for a host
+      operationId: getEarnings
+      parameters:
+        - $ref: "#/components/parameters/HostIDPath"
+      responses:
+        "200":
+          description: Earnings summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_HostEarnings"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /payouts/history/{hostID}:
+    get:
+      tags: [Payouts]
+      summary: Paginated payout history for a host
+      operationId: getPayoutHistory
+      parameters:
+        - $ref: "#/components/parameters/HostIDPath"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+          description: Max records to return
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+          description: Records to skip
+      responses:
+        "200":
+          description: Array of payment records
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_PaymentList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Reviews ─────────────────────────────────
+  /reviews/:
+    post:
+      tags: [Reviews]
+      summary: Create a review for an event
+      operationId: createReview
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReviewRequest"
+      responses:
+        "201":
+          description: Review created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Review"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /reviews/event/{eventID}:
+    get:
+      tags: [Reviews]
+      summary: List reviews for an event
+      operationId: getReviewsByEvent
+      parameters:
+        - $ref: "#/components/parameters/EventIDPath"
+      responses:
+        "200":
+          description: Array of reviews
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_ReviewList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Inbox ───────────────────────────────────
+  /inbox/broadcast:
+    post:
+      tags: [Inbox]
+      summary: Broadcast a message to event attendees
+      operationId: broadcastMessage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BroadcastRequest"
+      responses:
+        "201":
+          description: Message broadcast
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_InboxMessage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /inbox/host/{hostID}:
+    get:
+      tags: [Inbox]
+      summary: List inbox messages sent by a host
+      operationId: getInboxByHost
+      parameters:
+        - $ref: "#/components/parameters/HostIDPath"
+      responses:
+        "200":
+          description: Array of inbox messages
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_InboxMessageList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Webhooks ────────────────────────────────
+  /webhooks/payout:
+    post:
+      tags: [Webhooks]
+      summary: Razorpay payout webhook receiver
+      operationId: razorpayPayoutWebhook
+      description: |
+        Called by Razorpay when a payout status changes.
+        The signature header `X-Razorpay-Signature` is verified using HMAC-SHA256
+        with the webhook secret.
+      parameters:
+        - name: X-Razorpay-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+          description: HMAC-SHA256 signature of the request body
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RazorpayWebhookEvent"
+      responses:
+        "200":
+          description: Webhook processed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Message"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Invalid webhook signature
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+# ──────────────────────────────────────────────
+# COMPONENTS
+# ──────────────────────────────────────────────
+components:
+  # ── Parameters ──────────────────────────────
+  parameters:
+    HostIDPath:
+      name: hostID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Host UUID
+
+    BookingIDPath:
+      name: bookingID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Booking UUID
+
+    EventIDPath:
+      name: eventID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Event UUID
+
+    UserIDPath:
+      name: userID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: User UUID
+
+    MethodIDPath:
+      name: methodID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Payout method UUID
+
+  # ── Reusable Responses ─────────────────────
+  responses:
+    BadRequest:
+      description: Invalid request payload or parameters
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Schemas ─────────────────────────────────
+  schemas:
+    # ── Envelope ──────────────────────────────
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+          example: "invalid request payload"
+        error:
+          type: string
+          example: "invalid request payload"
+
+    # ── Request Bodies ────────────────────────
+    UserSignUpRequest:
+      type: object
+      required: [auth_uid, email, name, phn_number]
+      properties:
+        auth_uid:
+          type: string
+          description: Firebase Auth UID
+          example: "firebase_uid_abc123"
+        email:
+          type: string
+          format: email
+          example: "user@example.com"
+        name:
+          type: string
+          example: "Ankit Sharma"
+        phn_number:
+          type: string
+          example: "+919876543210"
+
+    InitiateAadharRequest:
+      type: object
+      required: [user_id, aadhar_number]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        aadhar_number:
+          type: string
+          example: "123456789012"
+
+    CompleteAadharRequest:
+      type: object
+      required: [user_id, transaction_id, otp]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        transaction_id:
+          type: string
+        otp:
+          type: string
+          example: "123456"
+
+    CreateHostRequest:
+      type: object
+      required: [user_id, name, phn_number]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: "Ankit Events"
+        phn_number:
+          type: string
+          example: "+919876543210"
+
+    CreateEventRequest:
+      type: object
+      required: [host_id, name, time, capacity]
+      properties:
+        host_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: "Weekend Football Slot"
+        time:
+          type: string
+          format: date-time
+          description: Event start time (RFC 3339)
+        end_time:
+          type: string
+          format: date-time
+          nullable: true
+          description: Optional event end time
+        capacity:
+          type: integer
+          minimum: 1
+          example: 20
+        ai_suggestion:
+          type: string
+          nullable: true
+          description: Optional AI-generated suggestion
+
+    CreateBookingRequest:
+      type: object
+      required: [user_id, event_id, quantity]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        event_id:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          minimum: 1
+          example: 2
+        idempotency_key:
+          type: string
+          description: Optional idempotency key to prevent duplicate bookings
+
+    AddPayoutMethodRequest:
+      type: object
+      required: [host_id, type]
+      properties:
+        host_id:
+          type: string
+          format: uuid
+        type:
+          $ref: "#/components/schemas/PayoutMethodType"
+        bank_name:
+          type: string
+          nullable: true
+          example: "HDFC Bank"
+        account_type:
+          type: string
+          nullable: true
+          enum: [checking, savings]
+        account_number:
+          type: string
+          nullable: true
+          description: Full account number (stored encrypted, never returned)
+        ifsc:
+          type: string
+          nullable: true
+          example: "HDFC0001234"
+        beneficiary_name:
+          type: string
+          nullable: true
+          example: "Ankit Sharma"
+        upi_id:
+          type: string
+          nullable: true
+          example: "ankit@upi"
+
+    WithdrawalRequest:
+      type: object
+      required: [host_id, amount_cents, idempotency_key]
+      properties:
+        host_id:
+          type: string
+          format: uuid
+        amount_cents:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Amount in paise (INR cents)
+          example: 500000
+        payout_method_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Specific payout method (uses primary if omitted)
+        idempotency_key:
+          type: string
+          example: "withdraw-abc-123"
+
+    CreateReviewRequest:
+      type: object
+      required: [user_id, event_id, description]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        event_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          nullable: true
+          description: Optional reviewer display name
+        description:
+          type: string
+          example: "Great event, well organised!"
+
+    BroadcastRequest:
+      type: object
+      required: [host_id, event_id, message]
+      properties:
+        host_id:
+          type: string
+          format: uuid
+        event_id:
+          type: string
+          format: uuid
+        message:
+          type: string
+          example: "Event starts in 30 minutes!"
+
+    RazorpayWebhookEvent:
+      type: object
+      description: Razorpay webhook payload for payout status updates
+      properties:
+        entity:
+          type: string
+          example: "event"
+        account_id:
+          type: string
+          example: "acc_BFQ7uqO1at5JFe"
+        event:
+          type: string
+          example: "payout.processed"
+        contains:
+          type: array
+          items:
+            type: string
+          example: ["payout"]
+        payload:
+          type: object
+          properties:
+            payout:
+              type: object
+              properties:
+                entity:
+                  $ref: "#/components/schemas/RazorpayPayoutEntity"
+        created_at:
+          type: integer
+          format: int64
+          description: Unix timestamp
+
+    RazorpayPayoutEntity:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "pout_EKm3ELkQ0K2gxj"
+        fund_account_id:
+          type: string
+        amount:
+          type: integer
+          format: int64
+          description: Amount in paise
+        currency:
+          type: string
+          example: "INR"
+        status:
+          type: string
+          enum: [processed, reversed, failed, cancelled]
+        mode:
+          type: string
+          enum: [NEFT, RTGS, IMPS, UPI]
+        purpose:
+          type: string
+        reference_id:
+          type: string
+          description: Maps to payment.idempotency_key
+        narration:
+          type: string
+        failure_reason:
+          type: string
+          nullable: true
+        status_details:
+          type: object
+          nullable: true
+        error:
+          type: object
+          nullable: true
+
+    # ── Response Models ───────────────────────
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        auth_uid:
+          type: string
+        name:
+          type: string
+        phn_number:
+          type: string
+        email:
+          type: string
+          format: email
+        account_id:
+          type: string
+          format: uuid
+          nullable: true
+        is_verified:
+          type: boolean
+        verified_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Host:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        phn_number:
+          type: string
+        account_id:
+          type: string
+          format: uuid
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Event:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        host_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+          nullable: true
+        capacity:
+          type: integer
+        ai_suggestion:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Booking:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        event_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+        status:
+          $ref: "#/components/schemas/BookingStatus"
+        payment_id:
+          type: string
+          format: uuid
+          nullable: true
+        idempotency_key:
+          type: string
+          nullable: true
+        amount_cents:
+          type: integer
+          format: int64
+          nullable: true
+          description: Total booking value in paise
+        service_fee_cents:
+          type: integer
+          format: int64
+          nullable: true
+          description: Platform fee (15%)
+        net_earning_cents:
+          type: integer
+          format: int64
+          nullable: true
+          description: Host net earnings (85%)
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        cancelled_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    Payment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        idempotency_key:
+          type: string
+        account_id:
+          type: string
+          format: uuid
+        type:
+          $ref: "#/components/schemas/PaymentType"
+        reference_id:
+          type: string
+          format: uuid
+          nullable: true
+        amount_cents:
+          type: integer
+          format: int64
+        status:
+          $ref: "#/components/schemas/PaymentStatus"
+        retry_count:
+          type: integer
+        last_error:
+          type: string
+          nullable: true
+        payout_method_id:
+          type: string
+          format: uuid
+          nullable: true
+        display_reference:
+          type: string
+          nullable: true
+          example: "TXN-88234"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PayoutMethod:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        host_id:
+          type: string
+          format: uuid
+        type:
+          $ref: "#/components/schemas/PayoutMethodType"
+        bank_name:
+          type: string
+          nullable: true
+        account_type:
+          type: string
+          nullable: true
+        last_four_digits:
+          type: string
+          nullable: true
+        ifsc:
+          type: string
+          nullable: true
+        beneficiary_name:
+          type: string
+          nullable: true
+        upi_id:
+          type: string
+          nullable: true
+        is_verified:
+          type: boolean
+        is_primary:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    HostEarnings:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        host_id:
+          type: string
+          format: uuid
+        total_earnings_cents:
+          type: integer
+          format: int64
+        pending_clearance_cents:
+          type: integer
+          format: int64
+        estimated_clearance_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Review:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        event_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          nullable: true
+        description:
+          type: string
+        reply:
+          type: array
+          items:
+            type: string
+        sentiment_score:
+          type: number
+          format: double
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    InboxMessage:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        event_id:
+          type: string
+          format: uuid
+        host_id:
+          type: string
+          format: uuid
+        message:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    # ── Enums ─────────────────────────────────
+    BookingStatus:
+      type: string
+      enum: [pending, confirmed, cancelled, refunded]
+
+    PaymentType:
+      type: string
+      enum: [booking, withdrawal, refund, payout, topup]
+
+    PaymentStatus:
+      type: string
+      enum: [pending, processing, completed, failed, reversed]
+
+    PayoutMethodType:
+      type: string
+      enum: [bank, upi]
+
+    # ── Wrapped Success Responses ─────────────
+    SuccessResponse_User:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/User"
+
+    SuccessResponse_Host:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/Host"
+
+    SuccessResponse_Event:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/Event"
+
+    SuccessResponse_EventList:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Event"
+
+    SuccessResponse_Booking:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/Booking"
+
+    SuccessResponse_BookingList:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Booking"
+
+    SuccessResponse_Payment:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/Payment"
+
+    SuccessResponse_PaymentList:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Payment"
+
+    SuccessResponse_PayoutMethod:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/PayoutMethod"
+
+    SuccessResponse_PayoutMethodList:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/PayoutMethod"
+
+    SuccessResponse_HostEarnings:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/HostEarnings"
+
+    SuccessResponse_Review:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/Review"
+
+    SuccessResponse_ReviewList:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Review"
+
+    SuccessResponse_InboxMessage:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/InboxMessage"
+
+    SuccessResponse_InboxMessageList:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/InboxMessage"
+
+    SuccessResponse_Message:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            message:
+              type: string
+              example: "operation successful"
+
+    SuccessResponse_AadharInit:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            transaction_id:
+              type: string
+            message:
+              type: string
+              example: "OTP sent to registered mobile"

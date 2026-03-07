@@ -1,0 +1,206 @@
+package repository
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"myslotmate-backend/internal/models"
+
+	"github.com/google/uuid"
+)
+
+// PayoutRepository provides payout method, host earnings, and platform settings data access.
+type PayoutRepository interface {
+	// Payout Methods
+	CreatePayoutMethod(ctx context.Context, pm *models.PayoutMethod) error
+	GetPayoutMethodByID(ctx context.Context, id uuid.UUID) (*models.PayoutMethod, error)
+	ListPayoutMethodsByHostID(ctx context.Context, hostID uuid.UUID) ([]*models.PayoutMethod, error)
+	GetPrimaryPayoutMethod(ctx context.Context, hostID uuid.UUID) (*models.PayoutMethod, error)
+	SetPrimary(ctx context.Context, hostID uuid.UUID, methodID uuid.UUID) error
+	DeletePayoutMethod(ctx context.Context, id uuid.UUID) error
+
+	// Host Earnings
+	GetHostEarnings(ctx context.Context, hostID uuid.UUID) (*models.HostEarnings, error)
+	IncrementEarnings(ctx context.Context, hostID uuid.UUID, amountCents int64) error
+	AddPendingClearance(ctx context.Context, hostID uuid.UUID, amountCents int64) error
+	ClearPending(ctx context.Context, hostID uuid.UUID, amountCents int64) error
+
+	// Platform Settings
+	GetPlatformFeeConfig(ctx context.Context) (*models.PlatformFeeConfig, error)
+
+	// Fraud Flags
+	HasActiveFraudFlag(ctx context.Context, userID uuid.UUID) (bool, error)
+}
+
+type postgresPayoutRepository struct {
+	db *sql.DB
+}
+
+func NewPayoutRepository(db *sql.DB) PayoutRepository {
+	return &postgresPayoutRepository{db: db}
+}
+
+// ── Payout Methods ──────────────────────────────────────────────────────────
+
+func (r *postgresPayoutRepository) CreatePayoutMethod(ctx context.Context, pm *models.PayoutMethod) error {
+	query := `
+		INSERT INTO payout_methods (id, host_id, type, bank_name, account_type, last_four_digits, account_number_encrypted, ifsc, beneficiary_name, upi_id, is_verified, is_primary, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+	`
+	if pm.ID == uuid.Nil {
+		pm.ID = uuid.New()
+	}
+	_, err := r.db.ExecContext(ctx, query,
+		pm.ID, pm.HostID, pm.Type, pm.BankName, pm.AccountType,
+		pm.LastFourDigits, pm.AccountNumberEncrypted, pm.IFSC, pm.BeneficiaryName,
+		pm.UPIID, pm.IsVerified, pm.IsPrimary, pm.CreatedAt, pm.UpdatedAt,
+	)
+	return err
+}
+
+func (r *postgresPayoutRepository) GetPayoutMethodByID(ctx context.Context, id uuid.UUID) (*models.PayoutMethod, error) {
+	pm := &models.PayoutMethod{}
+	query := `SELECT id, host_id, type, bank_name, account_type, last_four_digits, account_number_encrypted, ifsc, beneficiary_name, upi_id, is_verified, is_primary, created_at, updated_at
+		FROM payout_methods WHERE id = $1`
+	err := r.db.QueryRowContext(ctx, query, id).Scan(
+		&pm.ID, &pm.HostID, &pm.Type, &pm.BankName, &pm.AccountType,
+		&pm.LastFourDigits, &pm.AccountNumberEncrypted, &pm.IFSC, &pm.BeneficiaryName,
+		&pm.UPIID, &pm.IsVerified, &pm.IsPrimary, &pm.CreatedAt, &pm.UpdatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return pm, nil
+}
+
+func (r *postgresPayoutRepository) ListPayoutMethodsByHostID(ctx context.Context, hostID uuid.UUID) ([]*models.PayoutMethod, error) {
+	query := `SELECT id, host_id, type, bank_name, account_type, last_four_digits, account_number_encrypted, ifsc, beneficiary_name, upi_id, is_verified, is_primary, created_at, updated_at
+		FROM payout_methods WHERE host_id = $1 ORDER BY is_primary DESC, created_at DESC`
+	rows, err := r.db.QueryContext(ctx, query, hostID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var methods []*models.PayoutMethod
+	for rows.Next() {
+		pm := &models.PayoutMethod{}
+		if err := rows.Scan(
+			&pm.ID, &pm.HostID, &pm.Type, &pm.BankName, &pm.AccountType,
+			&pm.LastFourDigits, &pm.AccountNumberEncrypted, &pm.IFSC, &pm.BeneficiaryName,
+			&pm.UPIID, &pm.IsVerified, &pm.IsPrimary, &pm.CreatedAt, &pm.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		methods = append(methods, pm)
+	}
+	return methods, nil
+}
+
+func (r *postgresPayoutRepository) GetPrimaryPayoutMethod(ctx context.Context, hostID uuid.UUID) (*models.PayoutMethod, error) {
+	pm := &models.PayoutMethod{}
+	query := `SELECT id, host_id, type, bank_name, account_type, last_four_digits, account_number_encrypted, ifsc, beneficiary_name, upi_id, is_verified, is_primary, created_at, updated_at
+		FROM payout_methods WHERE host_id = $1 AND is_primary = true LIMIT 1`
+	err := r.db.QueryRowContext(ctx, query, hostID).Scan(
+		&pm.ID, &pm.HostID, &pm.Type, &pm.BankName, &pm.AccountType,
+		&pm.LastFourDigits, &pm.AccountNumberEncrypted, &pm.IFSC, &pm.BeneficiaryName,
+		&pm.UPIID, &pm.IsVerified, &pm.IsPrimary, &pm.CreatedAt, &pm.UpdatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return pm, nil
+}
+
+func (r *postgresPayoutRepository) SetPrimary(ctx context.Context, hostID uuid.UUID, methodID uuid.UUID) error {
+	// Unset all, then set the chosen one
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `UPDATE payout_methods SET is_primary = false WHERE host_id = $1`, hostID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE payout_methods SET is_primary = true WHERE id = $1 AND host_id = $2`, methodID, hostID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (r *postgresPayoutRepository) DeletePayoutMethod(ctx context.Context, id uuid.UUID) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM payout_methods WHERE id = $1`, id)
+	return err
+}
+
+// ── Host Earnings ───────────────────────────────────────────────────────────
+
+func (r *postgresPayoutRepository) GetHostEarnings(ctx context.Context, hostID uuid.UUID) (*models.HostEarnings, error) {
+	he := &models.HostEarnings{}
+	query := `SELECT id, host_id, total_earnings_cents, pending_clearance_cents, estimated_clearance_at, created_at, updated_at FROM host_earnings WHERE host_id = $1`
+	err := r.db.QueryRowContext(ctx, query, hostID).Scan(
+		&he.ID, &he.HostID, &he.TotalEarningsCents, &he.PendingClearanceCents,
+		&he.EstimatedClearanceAt, &he.CreatedAt, &he.UpdatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return he, nil
+}
+
+func (r *postgresPayoutRepository) IncrementEarnings(ctx context.Context, hostID uuid.UUID, amountCents int64) error {
+	query := `UPDATE host_earnings SET total_earnings_cents = total_earnings_cents + $1 WHERE host_id = $2`
+	_, err := r.db.ExecContext(ctx, query, amountCents, hostID)
+	return err
+}
+
+func (r *postgresPayoutRepository) AddPendingClearance(ctx context.Context, hostID uuid.UUID, amountCents int64) error {
+	query := `UPDATE host_earnings SET pending_clearance_cents = pending_clearance_cents + $1 WHERE host_id = $2`
+	_, err := r.db.ExecContext(ctx, query, amountCents, hostID)
+	return err
+}
+
+func (r *postgresPayoutRepository) ClearPending(ctx context.Context, hostID uuid.UUID, amountCents int64) error {
+	query := `UPDATE host_earnings SET pending_clearance_cents = GREATEST(pending_clearance_cents - $1, 0) WHERE host_id = $2`
+	_, err := r.db.ExecContext(ctx, query, amountCents, hostID)
+	return err
+}
+
+// ── Platform Settings ───────────────────────────────────────────────────────
+
+func (r *postgresPayoutRepository) GetPlatformFeeConfig(ctx context.Context) (*models.PlatformFeeConfig, error) {
+	var raw []byte
+	query := `SELECT value FROM platform_settings WHERE key = 'platform_fee'`
+	err := r.db.QueryRowContext(ctx, query).Scan(&raw)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// Return default 85/15 if not seeded
+			return &models.PlatformFeeConfig{HostPercentage: 85, PlatformPercentage: 15}, nil
+		}
+		return nil, err
+	}
+	var cfg models.PlatformFeeConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// ── Fraud Flags ─────────────────────────────────────────────────────────────
+
+func (r *postgresPayoutRepository) HasActiveFraudFlag(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var exists bool
+	query := `SELECT EXISTS(SELECT 1 FROM fraud_flags WHERE user_id = $1 AND is_active = true AND (blocked_until IS NULL OR blocked_until > NOW()))`
+	err := r.db.QueryRowContext(ctx, query, userID).Scan(&exists)
+	return exists, err
+}

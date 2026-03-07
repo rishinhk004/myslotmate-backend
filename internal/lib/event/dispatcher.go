@@ -12,7 +12,12 @@ const (
 	HostCreated          EventName = "host_created"
 	EventCreated         EventName = "event_created"
 	BookingCreated       EventName = "booking_created"
+	BookingConfirmed     EventName = "booking_confirmed"
+	BookingCancelled     EventName = "booking_cancelled"
 	BookingStatusChanged EventName = "booking_status_changed"
+	PayoutCompleted      EventName = "payout_completed"
+	PayoutFailed         EventName = "payout_failed"
+	PaymentCreated       EventName = "payment_created"
 )
 
 // Observer (Subscriber) interface
