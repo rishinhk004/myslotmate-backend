@@ -3,13 +3,14 @@ info:
   title: MySlotMate API
   description: |
     Backend API for **MySlotMate** – a slot-booking platform with wallet-based payments,
-    Razorpay payouts, Aadhar (Setu OKYC) verification, and real-time inbox broadcasting.
+    Razorpay payouts, Aadhar (Setu OKYC) verification, AWS S3 file uploads,
+    and real-time inbox messaging.
 
     Every response follows the standard envelope:
     ```json
     { "success": true|false, "data": ..., "message": "...", "error": "..." }
     ```
-  version: "1.0.0"
+  version: "2.0.0"
 
 servers:
   - url: http://localhost:{port}
@@ -23,20 +24,30 @@ tags:
     description: Server health check
   - name: Auth
     description: User sign-up & Aadhar verification
+  - name: Users
+    description: User profile management
+  - name: SavedExperiences
+    description: Bookmark/unsave experiences
   - name: Hosts
-    description: Host creation & lookup
+    description: Host application, profile & dashboard
   - name: Events
-    description: Event management
+    description: Event (experience) CRUD, publish/pause/resume, calendar
   - name: Bookings
     description: Booking lifecycle (create → confirm → cancel)
   - name: Payouts
     description: Payout methods, withdrawal, earnings & history
   - name: Reviews
-    description: Event reviews
+    description: Event reviews with ratings & photos
   - name: Inbox
-    description: Host broadcast messages
+    description: Multi-party messaging (host/guest/system)
+  - name: Support
+    description: Support tickets & report-a-participant
+  - name: Upload
+    description: Generic file upload (AWS S3)
   - name: Webhooks
     description: Razorpay payout webhook receiver
+  - name: Admin
+    description: Admin-only host application management (requires ADMIN_EMAIL)
 
 # ──────────────────────────────────────────────
 # PATHS
@@ -57,7 +68,7 @@ paths:
                 type: string
                 example: ok
 
-  # ── Auth / Users ────────────────────────────
+  # ── Auth ────────────────────────────────────
   /auth/signup:
     post:
       tags: [Auth]
@@ -133,21 +144,181 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
-  # ── Hosts ───────────────────────────────────
-  /hosts/:
-    post:
-      tags: [Hosts]
-      summary: Create a host profile
-      operationId: createHost
+  # ── Users ───────────────────────────────────
+  /users/me:
+    get:
+      tags: [Users]
+      summary: Get own user profile
+      operationId: getMyProfile
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [Users]
+      summary: Update own profile
+      operationId: updateProfile
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CreateHostRequest"
+              $ref: "#/components/schemas/UserProfileUpdateRequest"
+      responses:
+        "200":
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Saved Experiences ───────────────────────
+  /users/saved-experiences:
+    post:
+      tags: [SavedExperiences]
+      summary: Save/bookmark an experience
+      operationId: saveExperience
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SaveExperienceRequest"
       responses:
         "201":
-          description: Host created
+          description: Experience saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_SavedExperience"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [SavedExperiences]
+      summary: List all saved experiences
+      operationId: getSavedExperiences
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Array of saved experiences
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_SavedExperienceList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /users/saved-experiences/{eventID}:
+    delete:
+      tags: [SavedExperiences]
+      summary: Remove a saved experience
+      operationId: unsaveExperience
+      parameters:
+        - $ref: "#/components/parameters/EventIDPath"
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Experience unsaved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Message"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /users/saved-experiences/{eventID}/check:
+    get:
+      tags: [SavedExperiences]
+      summary: Check if an event is saved
+      operationId: isExperienceSaved
+      parameters:
+        - $ref: "#/components/parameters/EventIDPath"
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: "Returns { saved: true/false }"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      saved:
+                        type: boolean
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Hosts ───────────────────────────────────
+  /hosts/apply:
+    post:
+      tags: [Hosts]
+      summary: Submit host application (status → pending)
+      operationId: submitHostApplication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HostApplicationRequest"
+      responses:
+        "201":
+          description: Application submitted
           content:
             application/json:
               schema:
@@ -157,10 +328,59 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /hosts/apply/draft:
+    post:
+      tags: [Hosts]
+      summary: Save host application as draft
+      operationId: saveHostDraft
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HostApplicationRequest"
+      responses:
+        "201":
+          description: Draft saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Host"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /hosts/application-status:
+    get:
+      tags: [Hosts]
+      summary: Check own application status
+      operationId: getApplicationStatus
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Application status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Host"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /hosts/me:
     get:
       tags: [Hosts]
-      summary: Get host profile for the current user
+      summary: Get own host profile
       operationId: getMyHost
       parameters:
         - name: user_id
@@ -169,7 +389,6 @@ paths:
           schema:
             type: string
             format: uuid
-          description: The user's UUID
       responses:
         "200":
           description: Host profile
@@ -181,6 +400,151 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [Hosts]
+      summary: Update own host profile
+      operationId: updateHostProfile
+      parameters:
+        - name: host_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HostProfileUpdateRequest"
+      responses:
+        "200":
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Host"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /hosts/dashboard:
+    get:
+      tags: [Hosts]
+      summary: Get host dashboard overview
+      operationId: getHostDashboard
+      parameters:
+        - name: host_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Dashboard data (earnings, ratings, stats)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_HostDashboard"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Admin (Host Applications) ───────────────
+  /admin/hosts/applications:
+    get:
+      tags: [Admin]
+      summary: List all pending host applications
+      operationId: listPendingApplications
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of pending host applications
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_HostList"
+        "401":
+          description: Unauthorized — missing or invalid token
+        "403":
+          description: Forbidden — caller is not admin
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /admin/hosts/{hostID}/approve:
+    post:
+      tags: [Admin]
+      summary: Approve a host application (status → approved)
+      operationId: approveHostApplication
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: hostID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Application approved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Host"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Unauthorized — missing or invalid token
+        "403":
+          description: Forbidden — caller is not admin
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /admin/hosts/{hostID}/reject:
+    post:
+      tags: [Admin]
+      summary: Reject a host application (status → rejected)
+      operationId: rejectHostApplication
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: hostID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: Reason for rejecting the application
+                  example: Insufficient experience description
+      responses:
+        "200":
+          description: Application rejected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Host"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Unauthorized — missing or invalid token
+        "403":
+          description: Forbidden — caller is not admin
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -195,10 +559,54 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CreateEventRequest"
+              $ref: "#/components/schemas/EventCreateRequest"
       responses:
         "201":
           description: Event created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Event"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /events/{eventID}:
+    get:
+      tags: [Events]
+      summary: Get event details
+      operationId: getEvent
+      parameters:
+        - $ref: "#/components/parameters/EventIDPath"
+      responses:
+        "200":
+          description: Event details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Event"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [Events]
+      summary: Update an event
+      operationId: updateEvent
+      parameters:
+        - $ref: "#/components/parameters/EventIDPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EventUpdateRequest"
+      responses:
+        "200":
+          description: Event updated
           content:
             application/json:
               schema:
@@ -227,11 +635,176 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /events/host/{hostID}/filtered:
+    get:
+      tags: [Events]
+      summary: Filtered event search for a host
+      operationId: getHostEventsFiltered
+      parameters:
+        - $ref: "#/components/parameters/HostIDPath"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/EventStatus"
+        - name: mood
+          in: query
+          schema:
+            $ref: "#/components/schemas/EventMood"
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Filtered events
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_EventList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /events/calendar/{hostID}:
+    get:
+      tags: [Events]
+      summary: Calendar view of events for a host
+      operationId: getCalendarEvents
+      parameters:
+        - $ref: "#/components/parameters/HostIDPath"
+      responses:
+        "200":
+          description: Events for calendar rendering
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_EventList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /events/{eventID}/publish:
+    post:
+      tags: [Events]
+      summary: Publish a draft event (status → live)
+      operationId: publishEvent
+      parameters:
+        - $ref: "#/components/parameters/EventIDPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [host_id]
+              properties:
+                host_id:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          description: Event published
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Event"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /events/{eventID}/pause:
+    post:
+      tags: [Events]
+      summary: Pause a live event (status → paused)
+      operationId: pauseEvent
+      parameters:
+        - $ref: "#/components/parameters/EventIDPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [host_id]
+              properties:
+                host_id:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          description: Event paused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Event"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /events/{eventID}/resume:
+    post:
+      tags: [Events]
+      summary: Resume a paused event (status → live)
+      operationId: resumeEvent
+      parameters:
+        - $ref: "#/components/parameters/EventIDPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [host_id]
+              properties:
+                host_id:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          description: Event resumed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Event"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /events/{eventID}/attendees:
+    get:
+      tags: [Events]
+      summary: List confirmed attendees for an event
+      operationId: getEventAttendees
+      parameters:
+        - $ref: "#/components/parameters/EventIDPath"
+      responses:
+        "200":
+          description: Array of bookings (confirmed attendees)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_BookingList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   # ── Bookings ────────────────────────────────
   /bookings/:
     post:
       tags: [Bookings]
-      summary: Create a booking (status = pending)
+      summary: Create a booking (wallet debit, fee split)
       operationId: createBooking
       requestBody:
         required: true
@@ -405,7 +978,6 @@ paths:
           schema:
             type: string
             format: uuid
-          description: The host's UUID (ownership check)
       responses:
         "200":
           description: Method deleted
@@ -418,7 +990,6 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
-  # ── Withdrawal ──────────────────────────────
   /payouts/withdraw:
     post:
       tags: [Payouts]
@@ -432,7 +1003,7 @@ paths:
               $ref: "#/components/schemas/WithdrawalRequest"
       responses:
         "201":
-          description: Withdrawal initiated — payment record returned
+          description: Withdrawal initiated
           content:
             application/json:
               schema:
@@ -442,7 +1013,6 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
-  # ── Earnings & History ──────────────────────
   /payouts/earnings/{hostID}:
     get:
       tags: [Payouts]
@@ -474,13 +1044,11 @@ paths:
           schema:
             type: integer
             default: 20
-          description: Max records to return
         - name: offset
           in: query
           schema:
             type: integer
             default: 0
-          description: Records to skip
       responses:
         "200":
           description: Array of payment records
@@ -497,7 +1065,7 @@ paths:
   /reviews/:
     post:
       tags: [Reviews]
-      summary: Create a review for an event
+      summary: Submit a review with rating & optional photos
       operationId: createReview
       requestBody:
         required: true
@@ -536,11 +1104,65 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /reviews/event/{eventID}/rating:
+    get:
+      tags: [Reviews]
+      summary: Get aggregate rating for an event
+      operationId: getAverageRating
+      parameters:
+        - $ref: "#/components/parameters/EventIDPath"
+      responses:
+        "200":
+          description: Average rating
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      avg_rating:
+                        type: number
+                        format: double
+                      total_reviews:
+                        type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   # ── Inbox ───────────────────────────────────
+  /inbox/send:
+    post:
+      tags: [Inbox]
+      summary: Send a message in an event thread
+      operationId: sendMessage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageRequest"
+      responses:
+        "201":
+          description: Message sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_InboxMessage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /inbox/broadcast:
     post:
       tags: [Inbox]
-      summary: Broadcast a message to event attendees
+      summary: Host broadcasts to all event attendees
       operationId: broadcastMessage
       requestBody:
         required: true
@@ -560,11 +1182,30 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /inbox/event/{eventID}:
+    get:
+      tags: [Inbox]
+      summary: Get all messages for an event thread
+      operationId: getEventMessages
+      parameters:
+        - $ref: "#/components/parameters/EventIDPath"
+      responses:
+        "200":
+          description: Array of inbox messages
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_InboxMessageList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /inbox/host/{hostID}:
     get:
       tags: [Inbox]
-      summary: List inbox messages sent by a host
-      operationId: getInboxByHost
+      summary: Get all messages across host's events
+      operationId: getHostMessages
       parameters:
         - $ref: "#/components/parameters/HostIDPath"
       responses:
@@ -579,6 +1220,220 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /inbox/{messageID}/read:
+    post:
+      tags: [Inbox]
+      summary: Mark a message as read
+      operationId: markRead
+      parameters:
+        - $ref: "#/components/parameters/MessageIDPath"
+      responses:
+        "200":
+          description: Message marked as read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Message"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Support ─────────────────────────────────
+  /support/:
+    post:
+      tags: [Support]
+      summary: Create a support ticket (JSON or multipart with evidence)
+      operationId: createSupportTicket
+      description: |
+        Accepts both `application/json` and `multipart/form-data`.
+        For multipart, use form fields: `user_id`, `category`, `subject`, `message`,
+        `reported_user_id`, `event_id`, `session_date`, `report_reason`, `is_urgent`,
+        and file field `evidence` (multiple files allowed, uploaded to S3).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSupportTicketRequest"
+          multipart/form-data:
+            schema:
+              type: object
+              required: [user_id, category, subject, message]
+              properties:
+                user_id:
+                  type: string
+                  format: uuid
+                category:
+                  $ref: "#/components/schemas/SupportCategory"
+                subject:
+                  type: string
+                message:
+                  type: string
+                reported_user_id:
+                  type: string
+                  format: uuid
+                event_id:
+                  type: string
+                  format: uuid
+                session_date:
+                  type: string
+                  format: date-time
+                report_reason:
+                  $ref: "#/components/schemas/ReportReason"
+                is_urgent:
+                  type: string
+                  enum: ["true", "false"]
+                evidence:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        "201":
+          description: Ticket created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_SupportTicket"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /support/{ticketID}:
+    get:
+      tags: [Support]
+      summary: Get a support ticket by ID
+      operationId: getSupportTicket
+      parameters:
+        - $ref: "#/components/parameters/TicketIDPath"
+      responses:
+        "200":
+          description: Support ticket
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_SupportTicket"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /support/user/{userID}:
+    get:
+      tags: [Support]
+      summary: List all tickets for a user
+      operationId: getUserTickets
+      parameters:
+        - $ref: "#/components/parameters/UserIDPath"
+      responses:
+        "200":
+          description: Array of support tickets
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_SupportTicketList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /support/{ticketID}/message:
+    post:
+      tags: [Support]
+      summary: Add a message to a ticket thread
+      operationId: addSupportMessage
+      parameters:
+        - $ref: "#/components/parameters/TicketIDPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: string
+      responses:
+        "200":
+          description: Message added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_SupportTicket"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /support/{ticketID}/resolve:
+    post:
+      tags: [Support]
+      summary: Mark ticket as resolved
+      operationId: resolveSupportTicket
+      parameters:
+        - $ref: "#/components/parameters/TicketIDPath"
+      responses:
+        "200":
+          description: Ticket resolved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_SupportTicket"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Upload ──────────────────────────────────
+  /upload/:
+    post:
+      tags: [Upload]
+      summary: Upload files to AWS S3
+      operationId: uploadFiles
+      description: |
+        Generic file upload endpoint. Files are stored in AWS S3 under the specified folder prefix.
+        Accepted types: SVG, PNG, JPG, PDF. Max 10 MB per file.
+      parameters:
+        - name: folder
+          in: query
+          schema:
+            type: string
+            default: general
+          description: "S3 key prefix (e.g. events/covers, reviews/photos, support/evidence)"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [files]
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        "200":
+          description: Upload results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_UploadResultList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          description: File upload not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   # ── Webhooks ────────────────────────────────
   /webhooks/payout:
     post:
@@ -587,15 +1442,13 @@ paths:
       operationId: razorpayPayoutWebhook
       description: |
         Called by Razorpay when a payout status changes.
-        The signature header `X-Razorpay-Signature` is verified using HMAC-SHA256
-        with the webhook secret.
+        The signature header `X-Razorpay-Signature` is verified using HMAC-SHA256.
       parameters:
         - name: X-Razorpay-Signature
           in: header
           required: true
           schema:
             type: string
-          description: HMAC-SHA256 signature of the request body
       requestBody:
         required: true
         content:
@@ -624,6 +1477,14 @@ paths:
 # COMPONENTS
 # ──────────────────────────────────────────────
 components:
+  # ── Security Schemes ───────────────────────
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Firebase ID Token
+      description: "Firebase ID token passed as `Authorization: Bearer <token>`. Admin endpoints additionally require the token's email to match the `ADMIN_EMAIL` env variable."
+
   # ── Parameters ──────────────────────────────
   parameters:
     HostIDPath:
@@ -671,6 +1532,24 @@ components:
         format: uuid
       description: Payout method UUID
 
+    TicketIDPath:
+      name: ticketID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Support ticket UUID
+
+    MessageIDPath:
+      name: messageID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Inbox message UUID
+
   # ── Reusable Responses ─────────────────────
   responses:
     BadRequest:
@@ -705,10 +1584,8 @@ components:
           example: false
         message:
           type: string
-          example: "invalid request payload"
         error:
           type: string
-          example: "invalid request payload"
 
     # ── Request Bodies ────────────────────────
     UserSignUpRequest:
@@ -729,6 +1606,19 @@ components:
         phn_number:
           type: string
           example: "+919876543210"
+
+    UserProfileUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          nullable: true
+        avatar_url:
+          type: string
+          nullable: true
+        city:
+          type: string
+          nullable: true
 
     InitiateAadharRequest:
       type: object
@@ -754,47 +1644,255 @@ components:
           type: string
           example: "123456"
 
-    CreateHostRequest:
+    SaveExperienceRequest:
       type: object
-      required: [user_id, name, phn_number]
+      required: [user_id, event_id]
       properties:
         user_id:
           type: string
           format: uuid
-        name:
+        event_id:
           type: string
-          example: "Ankit Events"
+          format: uuid
+
+    HostApplicationRequest:
+      type: object
+      required: [user_id, first_name, last_name, city, phn_number]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        first_name:
+          type: string
+          example: "Ankit"
+        last_name:
+          type: string
+          example: "Sharma"
+        city:
+          type: string
+          example: "Mumbai"
         phn_number:
           type: string
           example: "+919876543210"
+        experience_desc:
+          type: string
+          nullable: true
+          description: "What Experiences will you Host?"
+        moods:
+          type: array
+          items:
+            type: string
+          example: ["adventure", "social", "wellness"]
+        description:
+          type: string
+          nullable: true
+          description: 300-char description
+        preferred_days:
+          type: array
+          items:
+            type: string
+          example: ["mon", "tue", "wed"]
+        group_size:
+          type: integer
+          nullable: true
+        government_id_url:
+          type: string
+          nullable: true
+        avatar_url:
+          type: string
+          nullable: true
+        tagline:
+          type: string
+          nullable: true
+        bio:
+          type: string
+          nullable: true
 
-    CreateEventRequest:
+    HostProfileUpdateRequest:
       type: object
-      required: [host_id, name, time, capacity]
+      properties:
+        tagline:
+          type: string
+          nullable: true
+        bio:
+          type: string
+          nullable: true
+        avatar_url:
+          type: string
+          nullable: true
+        city:
+          type: string
+          nullable: true
+        expertise_tags:
+          type: array
+          items:
+            type: string
+          example: ["#Minimalism", "#Wellness"]
+        social_instagram:
+          type: string
+          nullable: true
+        social_linkedin:
+          type: string
+          nullable: true
+        social_website:
+          type: string
+          nullable: true
+
+    EventCreateRequest:
+      type: object
+      required: [host_id, title, time, capacity]
       properties:
         host_id:
           type: string
           format: uuid
-        name:
+        title:
           type: string
           example: "Weekend Football Slot"
+        hook_line:
+          type: string
+          nullable: true
+        mood:
+          $ref: "#/components/schemas/EventMood"
+        description:
+          type: string
+          nullable: true
+        cover_image_url:
+          type: string
+          nullable: true
+        gallery_urls:
+          type: array
+          items:
+            type: string
         time:
           type: string
           format: date-time
-          description: Event start time (RFC 3339)
         end_time:
           type: string
           format: date-time
           nullable: true
-          description: Optional event end time
+        is_online:
+          type: boolean
+          default: false
+        location:
+          type: string
+          nullable: true
+        location_lat:
+          type: number
+          format: double
+          nullable: true
+        location_lng:
+          type: number
+          format: double
+          nullable: true
+        duration_minutes:
+          type: integer
+          nullable: true
         capacity:
           type: integer
           minimum: 1
           example: 20
+        min_group_size:
+          type: integer
+          nullable: true
+        max_group_size:
+          type: integer
+          nullable: true
+        price_cents:
+          type: integer
+          format: int64
+          nullable: true
+          description: Per guest in paise; null = free
+        is_free:
+          type: boolean
+          default: false
+        is_recurring:
+          type: boolean
+          default: false
+        recurrence_rule:
+          type: string
+          nullable: true
+          description: "iCal rule, e.g. FREQ=WEEKLY;BYDAY=MO"
+        cancellation_policy:
+          $ref: "#/components/schemas/CancellationPolicy"
         ai_suggestion:
           type: string
           nullable: true
-          description: Optional AI-generated suggestion
+
+    EventUpdateRequest:
+      type: object
+      description: All fields are optional — only provided fields are updated.
+      properties:
+        host_id:
+          type: string
+          format: uuid
+          description: Required for ownership verification
+        title:
+          type: string
+          nullable: true
+        hook_line:
+          type: string
+          nullable: true
+        mood:
+          $ref: "#/components/schemas/EventMood"
+        description:
+          type: string
+          nullable: true
+        cover_image_url:
+          type: string
+          nullable: true
+        gallery_urls:
+          type: array
+          items:
+            type: string
+        time:
+          type: string
+          format: date-time
+          nullable: true
+        end_time:
+          type: string
+          format: date-time
+          nullable: true
+        is_online:
+          type: boolean
+          nullable: true
+        location:
+          type: string
+          nullable: true
+        location_lat:
+          type: number
+          format: double
+          nullable: true
+        location_lng:
+          type: number
+          format: double
+          nullable: true
+        duration_minutes:
+          type: integer
+          nullable: true
+        capacity:
+          type: integer
+          nullable: true
+        min_group_size:
+          type: integer
+          nullable: true
+        max_group_size:
+          type: integer
+          nullable: true
+        price_cents:
+          type: integer
+          format: int64
+          nullable: true
+        is_free:
+          type: boolean
+          nullable: true
+        is_recurring:
+          type: boolean
+          nullable: true
+        recurrence_rule:
+          type: string
+          nullable: true
+        cancellation_policy:
+          $ref: "#/components/schemas/CancellationPolicy"
 
     CreateBookingRequest:
       type: object
@@ -812,7 +1910,6 @@ components:
           example: 2
         idempotency_key:
           type: string
-          description: Optional idempotency key to prevent duplicate bookings
 
     AddPayoutMethodRequest:
       type: object
@@ -834,7 +1931,7 @@ components:
         account_number:
           type: string
           nullable: true
-          description: Full account number (stored encrypted, never returned)
+          description: Full account number (stored encrypted)
         ifsc:
           type: string
           nullable: true
@@ -859,20 +1956,18 @@ components:
           type: integer
           format: int64
           minimum: 1
-          description: Amount in paise (INR cents)
           example: 500000
         payout_method_id:
           type: string
           format: uuid
           nullable: true
-          description: Specific payout method (uses primary if omitted)
         idempotency_key:
           type: string
           example: "withdraw-abc-123"
 
     CreateReviewRequest:
       type: object
-      required: [user_id, event_id, description]
+      required: [user_id, event_id, rating, description]
       properties:
         user_id:
           type: string
@@ -880,6 +1975,11 @@ components:
         event_id:
           type: string
           format: uuid
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+          example: 5
         name:
           type: string
           nullable: true
@@ -887,6 +1987,32 @@ components:
         description:
           type: string
           example: "Great event, well organised!"
+        photo_urls:
+          type: array
+          items:
+            type: string
+          description: Pre-uploaded photo URLs from /upload
+
+    SendMessageRequest:
+      type: object
+      required: [event_id, sender_type, message]
+      properties:
+        event_id:
+          type: string
+          format: uuid
+        sender_type:
+          $ref: "#/components/schemas/MessageSenderType"
+        sender_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: "null for system messages"
+        message:
+          type: string
+          example: "Hello everyone!"
+        attachment_url:
+          type: string
+          nullable: true
 
     BroadcastRequest:
       type: object
@@ -902,16 +2028,50 @@ components:
           type: string
           example: "Event starts in 30 minutes!"
 
+    CreateSupportTicketRequest:
+      type: object
+      required: [user_id, category, subject, message]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        category:
+          $ref: "#/components/schemas/SupportCategory"
+        subject:
+          type: string
+        message:
+          type: string
+        reported_user_id:
+          type: string
+          format: uuid
+          nullable: true
+        event_id:
+          type: string
+          format: uuid
+          nullable: true
+        session_date:
+          type: string
+          format: date-time
+          nullable: true
+        report_reason:
+          $ref: "#/components/schemas/ReportReason"
+        evidence_urls:
+          type: array
+          items:
+            type: string
+          description: Pre-uploaded evidence URLs
+        is_urgent:
+          type: boolean
+          default: false
+
     RazorpayWebhookEvent:
       type: object
-      description: Razorpay webhook payload for payout status updates
       properties:
         entity:
           type: string
           example: "event"
         account_id:
           type: string
-          example: "acc_BFQ7uqO1at5JFe"
         event:
           type: string
           example: "payout.processed"
@@ -919,7 +2079,6 @@ components:
           type: array
           items:
             type: string
-          example: ["payout"]
         payload:
           type: object
           properties:
@@ -931,7 +2090,6 @@ components:
         created_at:
           type: integer
           format: int64
-          description: Unix timestamp
 
     RazorpayPayoutEntity:
       type: object
@@ -944,7 +2102,6 @@ components:
         amount:
           type: integer
           format: int64
-          description: Amount in paise
         currency:
           type: string
           example: "INR"
@@ -958,17 +2115,10 @@ components:
           type: string
         reference_id:
           type: string
-          description: Maps to payment.idempotency_key
         narration:
           type: string
         failure_reason:
           type: string
-          nullable: true
-        status_details:
-          type: object
-          nullable: true
-        error:
-          type: object
           nullable: true
 
     # ── Response Models ───────────────────────
@@ -987,6 +2137,12 @@ components:
         email:
           type: string
           format: email
+        avatar_url:
+          type: string
+          nullable: true
+        city:
+          type: string
+          nullable: true
         account_id:
           type: string
           format: uuid
@@ -1013,14 +2169,90 @@ components:
         user_id:
           type: string
           format: uuid
-        name:
-          type: string
-        phn_number:
-          type: string
         account_id:
           type: string
           format: uuid
           nullable: true
+        first_name:
+          type: string
+        last_name:
+          type: string
+        phn_number:
+          type: string
+        city:
+          type: string
+        avatar_url:
+          type: string
+          nullable: true
+        tagline:
+          type: string
+          nullable: true
+        bio:
+          type: string
+          nullable: true
+        application_status:
+          $ref: "#/components/schemas/HostApplicationStatus"
+        experience_desc:
+          type: string
+          nullable: true
+        moods:
+          type: array
+          items:
+            type: string
+        description:
+          type: string
+          nullable: true
+        preferred_days:
+          type: array
+          items:
+            type: string
+        group_size:
+          type: integer
+          nullable: true
+        government_id_url:
+          type: string
+          nullable: true
+        submitted_at:
+          type: string
+          format: date-time
+          nullable: true
+        approved_at:
+          type: string
+          format: date-time
+          nullable: true
+        rejected_at:
+          type: string
+          format: date-time
+          nullable: true
+        is_identity_verified:
+          type: boolean
+        is_email_verified:
+          type: boolean
+        is_phone_verified:
+          type: boolean
+        is_super_host:
+          type: boolean
+        is_community_champ:
+          type: boolean
+        expertise_tags:
+          type: array
+          items:
+            type: string
+        social_instagram:
+          type: string
+          nullable: true
+        social_linkedin:
+          type: string
+          nullable: true
+        social_website:
+          type: string
+          nullable: true
+        avg_rating:
+          type: number
+          format: double
+          nullable: true
+        total_reviews:
+          type: integer
         created_at:
           type: string
           format: date-time
@@ -1037,8 +2269,53 @@ components:
         host_id:
           type: string
           format: uuid
-        name:
+        title:
           type: string
+        hook_line:
+          type: string
+          nullable: true
+        mood:
+          $ref: "#/components/schemas/EventMood"
+        description:
+          type: string
+          nullable: true
+        cover_image_url:
+          type: string
+          nullable: true
+        gallery_urls:
+          type: array
+          items:
+            type: string
+        is_online:
+          type: boolean
+        location:
+          type: string
+          nullable: true
+        location_lat:
+          type: number
+          format: double
+          nullable: true
+        location_lng:
+          type: number
+          format: double
+          nullable: true
+        duration_minutes:
+          type: integer
+          nullable: true
+        min_group_size:
+          type: integer
+          nullable: true
+        max_group_size:
+          type: integer
+          nullable: true
+        capacity:
+          type: integer
+        price_cents:
+          type: integer
+          format: int64
+          nullable: true
+        is_free:
+          type: boolean
         time:
           type: string
           format: date-time
@@ -1046,11 +2323,32 @@ components:
           type: string
           format: date-time
           nullable: true
-        capacity:
-          type: integer
+        is_recurring:
+          type: boolean
+        recurrence_rule:
+          type: string
+          nullable: true
+        cancellation_policy:
+          $ref: "#/components/schemas/CancellationPolicy"
+        status:
+          $ref: "#/components/schemas/EventStatus"
+        published_at:
+          type: string
+          format: date-time
+          nullable: true
+        paused_at:
+          type: string
+          format: date-time
+          nullable: true
         ai_suggestion:
           type: string
           nullable: true
+        avg_rating:
+          type: number
+          format: double
+          nullable: true
+        total_bookings:
+          type: integer
         created_at:
           type: string
           format: date-time
@@ -1085,17 +2383,14 @@ components:
           type: integer
           format: int64
           nullable: true
-          description: Total booking value in paise
         service_fee_cents:
           type: integer
           format: int64
           nullable: true
-          description: Platform fee (15%)
         net_earning_cents:
           type: integer
           format: int64
           nullable: true
-          description: Host net earnings (85%)
         created_at:
           type: string
           format: date-time
@@ -1227,11 +2522,19 @@ components:
         user_id:
           type: string
           format: uuid
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
         name:
           type: string
           nullable: true
         description:
           type: string
+        photo_urls:
+          type: array
+          items:
+            type: string
         reply:
           type: array
           items:
@@ -1256,14 +2559,116 @@ components:
         event_id:
           type: string
           format: uuid
-        host_id:
+        sender_type:
+          $ref: "#/components/schemas/MessageSenderType"
+        sender_id:
           type: string
           format: uuid
+          nullable: true
         message:
           type: string
+        attachment_url:
+          type: string
+          nullable: true
+        is_read:
+          type: boolean
         created_at:
           type: string
           format: date-time
+
+    SupportTicket:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        category:
+          $ref: "#/components/schemas/SupportCategory"
+        reported_user_id:
+          type: string
+          format: uuid
+          nullable: true
+        subject:
+          type: string
+        messages:
+          type: array
+          items:
+            type: object
+            properties:
+              sender:
+                type: string
+              text:
+                type: string
+              created_at:
+                type: string
+                format: date-time
+        status:
+          $ref: "#/components/schemas/SupportTicketStatus"
+        event_id:
+          type: string
+          format: uuid
+          nullable: true
+        session_date:
+          type: string
+          format: date
+          nullable: true
+        report_reason:
+          $ref: "#/components/schemas/ReportReason"
+        evidence_urls:
+          type: array
+          items:
+            type: string
+        is_urgent:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    SavedExperience:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        event_id:
+          type: string
+          format: uuid
+        saved_at:
+          type: string
+          format: date-time
+
+    UploadResult:
+      type: object
+      properties:
+        file_name:
+          type: string
+        url:
+          type: string
+          description: Public AWS S3 URL
+        size:
+          type: integer
+          format: int64
+
+    HostDashboard:
+      type: object
+      properties:
+        host:
+          $ref: "#/components/schemas/Host"
+        earnings:
+          $ref: "#/components/schemas/HostEarnings"
+        total_events:
+          type: integer
+        total_bookings:
+          type: integer
 
     # ── Enums ─────────────────────────────────
     BookingStatus:
@@ -1281,6 +2686,38 @@ components:
     PayoutMethodType:
       type: string
       enum: [bank, upi]
+
+    HostApplicationStatus:
+      type: string
+      enum: [draft, pending, under_review, approved, rejected]
+
+    EventStatus:
+      type: string
+      enum: [draft, live, paused]
+
+    EventMood:
+      type: string
+      enum: [adventure, social, wellness, chill, romantic, intellectual, foodie, nightlife]
+
+    CancellationPolicy:
+      type: string
+      enum: [flexible, moderate, strict]
+
+    SupportCategory:
+      type: string
+      enum: [report_participant, technical_support, policy_help]
+
+    SupportTicketStatus:
+      type: string
+      enum: [open, in_progress, resolved, closed]
+
+    ReportReason:
+      type: string
+      enum: [verbal_harassment, safety_concern, inappropriate_behavior, spam_or_scam]
+
+    MessageSenderType:
+      type: string
+      enum: [system, host, guest]
 
     # ── Wrapped Success Responses ─────────────
     SuccessResponse_User:
@@ -1300,6 +2737,26 @@ components:
           example: true
         data:
           $ref: "#/components/schemas/Host"
+
+    SuccessResponse_HostList:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Host"
+
+    SuccessResponse_HostDashboard:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/HostDashboard"
 
     SuccessResponse_Event:
       type: object
@@ -1429,6 +2886,57 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/InboxMessage"
+
+    SuccessResponse_SupportTicket:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/SupportTicket"
+
+    SuccessResponse_SupportTicketList:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/SupportTicket"
+
+    SuccessResponse_SavedExperience:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/SavedExperience"
+
+    SuccessResponse_SavedExperienceList:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/SavedExperience"
+
+    SuccessResponse_UploadResultList:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/UploadResult"
 
     SuccessResponse_Message:
       type: object

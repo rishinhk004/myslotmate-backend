@@ -9,6 +9,10 @@ import (
 	"syscall"
 	"time"
 
+	awscfg "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+
 	"myslotmate-backend/internal/config"
 	"myslotmate-backend/internal/controller"
 	"myslotmate-backend/internal/db"
@@ -17,6 +21,7 @@ import (
 	"myslotmate-backend/internal/lib/identity"
 	"myslotmate-backend/internal/lib/payout"
 	"myslotmate-backend/internal/lib/realtime"
+	"myslotmate-backend/internal/lib/storage"
 	"myslotmate-backend/internal/lib/worker"
 	"myslotmate-backend/internal/repository"
 	"myslotmate-backend/internal/server"
@@ -67,6 +72,25 @@ func main() {
 		log.Fatalf("failed to initialize firebase app: %v", err)
 	}
 
+	// Upload service backed by AWS S3 (nil-safe if bucket not configured)
+	var uploadService *storage.UploadService
+	if cfg.S3.Bucket != "" {
+		awsCfg, err := awscfg.LoadDefaultConfig(ctx,
+			awscfg.WithRegion(cfg.S3.Region),
+			awscfg.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+				cfg.S3.AccessKey, cfg.S3.SecretKey, "",
+			)),
+		)
+		if err != nil {
+			log.Fatalf("failed to load AWS config: %v", err)
+		}
+		s3Client := s3.NewFromConfig(awsCfg)
+		uploadService = storage.NewUploadService(s3Client, cfg.S3.Bucket, cfg.S3.Region)
+		log.Println("AWS S3 upload service enabled")
+	} else {
+		log.Println("Warning: AWS S3 bucket not configured — file uploads disabled")
+	}
+
 	// Repository Pattern: Data Layer
 	userRepo := repository.NewUserRepository(dbConn)
 	hostRepo := repository.NewHostRepository(dbConn)
@@ -77,6 +101,8 @@ func main() {
 	accountRepo := repository.NewAccountRepository(dbConn)
 	paymentRepo := repository.NewPaymentRepository(dbConn)
 	payoutRepo := repository.NewPayoutRepository(dbConn)
+	supportRepo := repository.NewSupportRepository(dbConn)
+	savedExpRepo := repository.NewSavedExperienceRepository(dbConn)
 
 	// Strategy Pattern: Identity Provider
 	aadharProvider := identity.NewSetuAadharProvider(identity.SetuConfig{
@@ -87,20 +113,25 @@ func main() {
 	})
 	log.Println("Using Setu Aadhar Provider")
 
-	userService := service.NewUserService(userRepo, workerPool, dispatcher, aadharProvider)
-	hostService := service.NewHostService(hostRepo, userRepo, dispatcher)
-	eventService := service.NewEventService(eventRepo, dispatcher)
+	userService := service.NewUserService(userRepo, savedExpRepo, workerPool, dispatcher, aadharProvider)
+	hostService := service.NewHostService(hostRepo, userRepo, eventRepo, bookingRepo, payoutRepo, dispatcher)
+	eventService := service.NewEventService(eventRepo, bookingRepo, dispatcher)
 	bookingService := service.NewBookingService(bookingRepo, eventRepo, accountRepo, paymentRepo, payoutRepo, hostRepo, dispatcher)
 	reviewService := service.NewReviewService(reviewRepo, dispatcher)
 	inboxService := service.NewInboxService(inboxRepo, eventRepo, socketService)
+	supportService := service.NewSupportService(supportRepo)
 
 	// Strategy Pattern: Payout Provider (Razorpay)
-	if cfg.Razorpay.KeyID == "" || cfg.Razorpay.KeySecret == "" {
-		log.Fatalf("Razorpay credentials (RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET) are required")
+	rzpKeyID := cfg.Razorpay.KeyID
+	rzpKeySecret := cfg.Razorpay.KeySecret
+	if rzpKeyID == "" || rzpKeySecret == "" {
+		log.Println("Warning: Razorpay credentials not configured — payouts disabled (using dummy keys)")
+		rzpKeyID = "rzp_test_dummy"
+		rzpKeySecret = "dummy_secret"
 	}
 	payoutProvider := payout.NewRazorpayProvider(payout.RazorpayConfig{
-		KeyID:         cfg.Razorpay.KeyID,
-		KeySecret:     cfg.Razorpay.KeySecret,
+		KeyID:         rzpKeyID,
+		KeySecret:     rzpKeySecret,
 		AccountNumber: cfg.Razorpay.AccountNumber,
 		WebhookSecret: cfg.Razorpay.WebhookSecret,
 	})
@@ -115,6 +146,9 @@ func main() {
 	inboxController := controller.NewInboxController(inboxService)
 	payoutController := controller.NewPayoutController(payoutService)
 	webhookController := controller.NewWebhookController(payoutService, payoutProvider)
+	supportController := controller.NewSupportController(supportService, uploadService)
+	uploadController := controller.NewUploadController(uploadService)
+	adminController := controller.NewAdminController(hostService, fbApp.Auth, cfg.AdminEmail)
 
 	router := server.NewRouter(
 		fbApp,
@@ -127,6 +161,9 @@ func main() {
 		inboxController,
 		payoutController,
 		webhookController,
+		supportController,
+		uploadController,
+		adminController,
 	)
 
 	srv := &http.Server{

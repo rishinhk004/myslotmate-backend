@@ -18,9 +18,7 @@ type App struct {
 	Auth *auth.Client
 }
 
-// NewApp initializes a Firebase Admin app (Auth client only for now).
-// It expects a path to the service account JSON file via Config.CredentialsFile.
-// If no credentials file is provided, it falls back to Application Default Credentials.
+// NewApp initializes a Firebase Admin app with Auth client.
 func NewApp(ctx context.Context, cfg Config) (*App, error) {
 	var opts []option.ClientOption
 
@@ -44,4 +42,3 @@ func NewApp(ctx context.Context, cfg Config) (*App, error) {
 		Auth: authClient,
 	}, nil
 }
-

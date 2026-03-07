@@ -33,6 +33,7 @@ MySlotMate allows users to discover and book event slots, and enables verified h
 | HTTP Router | [Chi v5](https://github.com/go-chi/chi) |
 | Database | **PostgreSQL** (via [pgx v5](https://github.com/jackc/pgx)) |
 | Auth | **Firebase Admin SDK** (ID token verification) |
+| File Storage | **AWS S3** (via AWS SDK for Go v2) |
 | Real-time | **Socket.IO** ([go-socket.io](https://github.com/googollee/go-socket.io)) |
 | Identity (KYC) | **Setu OKYC** (Aadhar verification) |
 | Payouts | **Razorpay Payouts API** (RazorpayX — bank & UPI transfers) |
@@ -58,7 +59,7 @@ The project follows **Clean Architecture** principles with strict layer separati
 ├──────────────────────────────────────────────────────────┤
 │                    Infrastructure                         │
 │  Worker Pool │ Event Dispatcher │ Socket.IO │ Identity    │
-│              │  Payout Provider (Razorpay)                │
+│              │  Payout Provider (Razorpay) │ Storage     │
 └──────────────────────────────────────────────────────────┘
                           │
                     ┌─────┴─────┐
@@ -73,16 +74,16 @@ The project follows **Clean Architecture** principles with strict layer separati
 | **Transport** | `internal/server`, `internal/controller` | HTTP routing, middleware, request decoding, JSON response formatting. **No business logic.** |
 | **Business Logic** | `internal/service` | Core rules (overbooking prevention, fee split, wallet debit/credit, verification flow), orchestrates repos + infra. |
 | **Data Access** | `internal/repository` | Direct SQL operations. Abstraction over PostgreSQL; mockable for unit tests. |
-| **Infrastructure** | `internal/lib/*` | Reusable components — Event Bus, Worker Pool, Identity (KYC), Payout (Razorpay), Real-time (Socket.IO). |
+| **Infrastructure** | `internal/lib/*` | Reusable components — Event Bus, Worker Pool, Identity (KYC), Payout (Razorpay), Storage (AWS S3), Real-time (Socket.IO). |
 
 ### Dependency Wiring (Composition Root)
 
 All dependencies are wired in `cmd/api/run.go`:
 
 ```
-main() → Config → DB → Dispatcher → WorkerPool → Firebase
+main() → Config → DB → Dispatcher → WorkerPool → Firebase (Auth) → AWS S3
        → Repositories → Identity Provider → Payout Provider (Razorpay)
-       → Services → Controllers → Router → HTTP Server
+       → Upload Service → Services → Controllers → Router → HTTP Server
 ```
 
 ---
@@ -134,7 +135,7 @@ type Provider interface {
 **Where:** `internal/repository/*.go`  
 **Why:** Abstracts database access behind interfaces, enabling service-layer unit tests with mocked repositories.
 
-Repositories: `UserRepository`, `HostRepository`, `EventRepository`, `BookingRepository`, `ReviewRepository`, `InboxRepository`, `AccountRepository`, `PaymentRepository`, `PayoutRepository`.
+Repositories: `UserRepository`, `HostRepository`, `EventRepository`, `BookingRepository`, `ReviewRepository`, `InboxRepository`, `AccountRepository`, `PaymentRepository`, `PayoutRepository`, `SupportRepository`, `SavedExperienceRepository`.
 
 ### 5. Executor / Worker Pool
 **Where:** `internal/lib/worker/pool.go`  
@@ -166,23 +167,27 @@ myslotmate-backend/
 │   └── firebase-service-account.json
 ├── internal/
 │   ├── auth/
-│   │   └── handler.go              # Firebase ID token verification
+│   │   ├── handler.go              # Firebase ID token verification
+│   │   └── admin.go                # IsAdmin middleware (Firebase token + email check)
 │   ├── config/
 │   │   └── config.go               # Env-based configuration loader
 │   ├── controller/                 # HTTP handlers (transport layer)
+│   │   ├── admin_controller.go     # Admin: approve/reject host applications
 │   │   ├── booking_controller.go   # Create/confirm/cancel bookings
-│   │   ├── event_controller.go     # Create/list events
-│   │   ├── host_controller.go      # Create/get host profiles
-│   │   ├── inbox_controller.go     # Broadcast messages to attendees
+│   │   ├── event_controller.go     # Full event CRUD, publish/pause/resume, calendar
+│   │   ├── host_controller.go      # Host application flow, profile, dashboard
+│   │   ├── inbox_controller.go     # Multi-party messaging, broadcast, mark-read
 │   │   ├── payout_controller.go    # Payout methods, withdrawals, earnings
-│   │   ├── response.go            # Standardized JSON response helpers
-│   │   ├── review_controller.go    # Submit/list reviews
-│   │   ├── user_controller.go      # Signup, Aadhar verification
+│   │   ├── response.go             # Standardized JSON response helpers
+│   │   ├── review_controller.go    # Submit/list reviews with photo URLs
+│   │   ├── support_controller.go   # Support tickets with evidence upload
+│   │   ├── upload_controller.go    # Generic file upload endpoint (AWS S3)
+│   │   ├── user_controller.go      # Signup, Aadhar, profile, saved experiences
 │   │   └── webhook_controller.go   # Razorpay payout webhooks
 │   ├── db/
 │   │   └── db.go                   # PostgreSQL connection (pgx)
 │   ├── firebase/
-│   │   └── firebase.go             # Firebase Admin SDK initialization
+│   │   └── firebase.go             # Firebase Admin SDK (Auth only)
 │   ├── lib/
 │   │   ├── event/
 │   │   │   └── dispatcher.go       # Singleton Observer (event bus)
@@ -194,48 +199,57 @@ myslotmate-backend/
 │   │   │   └── razorpay_provider.go# Razorpay Payouts API implementation
 │   │   ├── realtime/
 │   │   │   └── socket_service.go   # Socket.IO server
+│   │   ├── storage/
+│   │   │   └── s3_storage.go       # AWS S3 file upload service
 │   │   └── worker/
 │   │       └── pool.go             # Background worker pool (executor)
 │   ├── models/                     # Domain structs & enums
 │   │   ├── account.go              # Wallet account
 │   │   ├── booking.go              # Booking with fee breakdown
 │   │   ├── enums.go                # All enum types
-│   │   ├── event.go                # Event
+│   │   ├── event.go                # Event (experience) with full listing details
 │   │   ├── fraud.go                # Fraud flags
 │   │   ├── host_earnings.go        # Aggregate earnings
-│   │   ├── host.go                 # Host profile
-│   │   ├── inbox.go                # Inbox messages
+│   │   ├── host.go                 # Host profile with application fields
+│   │   ├── inbox.go                # Multi-party inbox messages
 │   │   ├── payment.go              # Transaction ledger
 │   │   ├── payout_method.go        # Bank/UPI payout methods
 │   │   ├── platform_settings.go    # Fee config
-│   │   ├── review.go               # Reviews with AI sentiment
-│   │   ├── support.go              # Support tickets
-│   │   └── user.go                 # User
+│   │   ├── review.go               # Reviews with ratings & photos
+│   │   ├── saved_experience.go     # User-saved experiences
+│   │   ├── support.go              # Support tickets with evidence
+│   │   └── user.go                 # User with avatar & city
 │   ├── repository/                 # Data access layer (SQL)
 │   │   ├── account_repository.go   # Wallet CRUD, credit/debit
 │   │   ├── booking_repository.go   # Booking CRUD, status updates
-│   │   ├── errors.go              # Sentinel errors (ErrInsufficientBalance, etc.)
-│   │   ├── event_repository.go     # Event CRUD
-│   │   ├── host_repository.go      # Host CRUD
+│   │   ├── errors.go               # Sentinel errors (ErrInsufficientBalance, etc.)
+│   │   ├── event_repository.go     # Event CRUD with filtered search
+│   │   ├── host_repository.go      # Host CRUD with application flow
 │   │   ├── inbox_repository.go     # Inbox messages
 │   │   ├── payment_repository.go   # Payment/transaction ledger
 │   │   ├── payout_repository.go    # Payout methods, host earnings, platform settings
-│   │   ├── review_repository.go    # Review CRUD
+│   │   ├── review_repository.go    # Review CRUD with photo URLs
+│   │   ├── support_repository.go   # Support ticket CRUD with evidence
+│   │   ├── saved_experience_repository.go # Saved experiences
 │   │   └── user_repository.go      # User CRUD
 │   ├── server/
 │   │   └── router.go               # Chi router, middleware, route mounting
 │   └── service/                    # Business logic layer
 │       ├── booking_service.go      # Booking with wallet debit/credit, fee split
-│       ├── event_service.go        # Event management
-│       ├── host_service.go         # Host profile management
-│       ├── inbox_service.go        # Broadcast messaging
+│       ├── event_service.go        # Event management with publish/pause/resume
+│       ├── host_service.go         # Host application & profile management
+│       ├── inbox_service.go        # Multi-party messaging & broadcast
 │       ├── payout_service.go       # Withdrawal, earnings, webhook handling
-│       ├── review_service.go       # Review management
-│       └── user_service.go         # Signup, Aadhar verification
+│       ├── review_service.go       # Review management with photos
+│       ├── support_service.go      # Support tickets with report fields
+│       └── user_service.go         # Signup, Aadhar, profile, saved experiences
 └── migrations/                     # PostgreSQL migration files
     ├── 20260228120000_init_schema.sql
     ├── 20260228130000_add_processing_status.sql
-    └── 20260228130001_earnings_payouts_schema.sql
+    ├── 20260228130001_earnings_payouts_schema.sql
+    ├── 20260307120000_figma_schema_expansion.sql
+    ├── 20260307130000_support_evidence_upload.sql
+    └── 20260307130001_review_photo_urls.sql
 ```
 
 ---
@@ -263,8 +277,9 @@ myslotmate-backend/
                         └──────────────┘          └──────────┘
 
   Event ◀──1:N── Review ──N:1──▶ User
-  Event ◀──1:N── InboxMessage ──N:1──▶ Host
-  User  ◀──1:N── SupportTicket
+  Event ◀──1:N── InboxMessage (multi-party: host/guest/system)
+  User  ◀──1:N── SupportTicket (with evidence uploads)
+  User  ◀──1:N── SavedExperience ──N:1──▶ Event
   User  ◀──1:N── FraudFlag
 ```
 
@@ -278,6 +293,8 @@ myslotmate-backend/
 | `name` | VARCHAR | NOT NULL |
 | `phn_number` | VARCHAR | |
 | `email` | VARCHAR | NOT NULL |
+| `avatar_url` | VARCHAR | Profile picture URL |
+| `city` | VARCHAR | User's city |
 | `account_id` | UUID | FK → `accounts` |
 | `is_verified` | BOOLEAN | DEFAULT `false` |
 | `verified_at` | TIMESTAMPTZ | |
@@ -289,9 +306,35 @@ myslotmate-backend/
 |--------|------|-------------|
 | `id` | UUID | PK |
 | `user_id` | UUID | UNIQUE, FK → `users` |
-| `name` | VARCHAR | NOT NULL |
-| `phn_number` | VARCHAR | |
 | `account_id` | UUID | FK → `accounts` |
+| `first_name` | VARCHAR | NOT NULL |
+| `last_name` | VARCHAR | NOT NULL |
+| `phn_number` | VARCHAR | |
+| `city` | VARCHAR | |
+| `avatar_url` | VARCHAR | Profile image URL |
+| `tagline` | VARCHAR | Short tagline |
+| `bio` | TEXT | Host bio |
+| `application_status` | ENUM | `draft` \| `pending` \| `under_review` \| `approved` \| `rejected` |
+| `experience_desc` | TEXT | "What Experiences will you Host?" |
+| `moods` | TEXT[] | e.g. `["adventure","social","wellness"]` |
+| `description` | TEXT | 300-char host description |
+| `preferred_days` | TEXT[] | e.g. `["mon","tue","wed"]` |
+| `group_size` | INT | Approximate group size |
+| `government_id_url` | VARCHAR | Uploaded ID doc URL |
+| `submitted_at` | TIMESTAMPTZ | Application submission time |
+| `approved_at` | TIMESTAMPTZ | |
+| `rejected_at` | TIMESTAMPTZ | |
+| `is_identity_verified` | BOOLEAN | Trust badge |
+| `is_email_verified` | BOOLEAN | Trust badge |
+| `is_phone_verified` | BOOLEAN | Trust badge |
+| `is_super_host` | BOOLEAN | Trust badge |
+| `is_community_champ` | BOOLEAN | Trust badge |
+| `expertise_tags` | TEXT[] | e.g. `["#Minimalism","#Wellness"]` |
+| `social_instagram` | VARCHAR | Instagram profile link |
+| `social_linkedin` | VARCHAR | LinkedIn profile link |
+| `social_website` | VARCHAR | Personal website |
+| `avg_rating` | FLOAT | Denormalized average rating |
+| `total_reviews` | INT | DEFAULT `0` |
 | `created_at` | TIMESTAMPTZ | |
 | `updated_at` | TIMESTAMPTZ | |
 
@@ -313,11 +356,35 @@ myslotmate-backend/
 |--------|------|-------------|
 | `id` | UUID | PK |
 | `host_id` | UUID | FK → `hosts` |
-| `name` | VARCHAR | NOT NULL |
+| `title` | VARCHAR | NOT NULL |
+| `hook_line` | VARCHAR | Short hook line |
+| `mood` | ENUM | `adventure` \| `social` \| `wellness` \| `chill` \| `romantic` \| `intellectual` \| `foodie` \| `nightlife` |
+| `description` | TEXT | |
+| `cover_image_url` | VARCHAR | Cover image URL |
+| `gallery_urls` | TEXT[] | Gallery image URLs |
+| `is_online` | BOOLEAN | DEFAULT `false` |
+| `location` | VARCHAR | Address/landmark |
+| `location_lat` | FLOAT | Latitude |
+| `location_lng` | FLOAT | Longitude |
+| `duration_minutes` | INT | |
+| `min_group_size` | INT | |
+| `max_group_size` | INT | |
+| `capacity` | INT | CHECK `≥ 0` (overbooking prevention) |
+| `price_cents` | BIGINT | Per guest; NULL = free |
+| `is_free` | BOOLEAN | DEFAULT `false` |
 | `time` | TIMESTAMPTZ | NOT NULL |
 | `end_time` | TIMESTAMPTZ | |
-| `capacity` | INT | CHECK `≥ 0` |
+| `is_recurring` | BOOLEAN | DEFAULT `false` |
+| `recurrence_rule` | VARCHAR | iCal rule, e.g. `FREQ=WEEKLY;BYDAY=MO` |
+| `cancellation_policy` | ENUM | `flexible` \| `moderate` \| `strict` |
+| `status` | ENUM | `draft` \| `live` \| `paused` |
+| `published_at` | TIMESTAMPTZ | |
+| `paused_at` | TIMESTAMPTZ | |
 | `ai_suggestion` | TEXT | |
+| `avg_rating` | FLOAT | Denormalized |
+| `total_bookings` | INT | DEFAULT `0` |
+| `created_at` | TIMESTAMPTZ | |
+| `updated_at` | TIMESTAMPTZ | |
 
 #### `bookings`
 | Column | Type | Constraints |
@@ -393,18 +460,25 @@ myslotmate-backend/
 | `id` | UUID | PK |
 | `event_id` | UUID | FK → `events` |
 | `user_id` | UUID | FK → `users` |
-| `name` | VARCHAR | |
+| `rating` | INT | 1–5 stars, NOT NULL |
+| `name` | VARCHAR | Reviewer display name |
 | `description` | TEXT | NOT NULL |
-| `reply` | TEXT[] | |
+| `photo_urls` | TEXT[] | Uploaded review photos |
+| `reply` | TEXT[] | Host replies |
 | `sentiment_score` | FLOAT | AI-generated |
+| `created_at` | TIMESTAMPTZ | |
+| `updated_at` | TIMESTAMPTZ | |
 
 #### `inbox_messages`
 | Column | Type | Constraints |
 |--------|------|-------------|
 | `id` | UUID | PK |
 | `event_id` | UUID | FK → `events` |
-| `host_id` | UUID | FK → `hosts` |
+| `sender_type` | ENUM | `system` \| `host` \| `guest` |
+| `sender_id` | UUID | FK → `users` or `hosts`; NULL for system |
 | `message` | TEXT | NOT NULL |
+| `attachment_url` | VARCHAR | Attached file URL |
+| `is_read` | BOOLEAN | DEFAULT `false` |
 | `created_at` | TIMESTAMPTZ | |
 
 #### `support_tickets`
@@ -412,9 +486,26 @@ myslotmate-backend/
 |--------|------|-------------|
 | `id` | UUID | PK |
 | `user_id` | UUID | FK → `users` |
+| `category` | ENUM | `report_participant` \| `technical_support` \| `policy_help` |
+| `reported_user_id` | UUID | FK → `users`; for report_participant |
 | `subject` | VARCHAR | |
 | `messages` | JSONB | `[{ sender, text, created_at }]` |
 | `status` | ENUM | `open` \| `in_progress` \| `resolved` \| `closed` |
+| `event_id` | UUID | FK → `events`; for report context |
+| `session_date` | DATE | Session date for the report |
+| `report_reason` | ENUM | `verbal_harassment` \| `safety_concern` \| `inappropriate_behavior` \| `spam_or_scam` |
+| `evidence_urls` | TEXT[] | Uploaded evidence file URLs |
+| `is_urgent` | BOOLEAN | DEFAULT `false`; urgent safety concern toggle |
+| `created_at` | TIMESTAMPTZ | |
+| `updated_at` | TIMESTAMPTZ | |
+
+#### `saved_experiences`
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `id` | UUID | PK |
+| `user_id` | UUID | FK → `users` |
+| `event_id` | UUID | FK → `events`; UNIQUE `(user_id, event_id)` |
+| `saved_at` | TIMESTAMPTZ | DEFAULT `now()` |
 
 #### `fraud_flags`
 | Column | Type | Constraints |
@@ -436,7 +527,14 @@ myslotmate-backend/
 | `payment_type` | `booking`, `withdrawal`, `refund`, `payout`, `topup` |
 | `payment_status` | `pending`, `processing`, `completed`, `failed`, `reversed` |
 | `payout_method_type` | `bank`, `upi` |
+| `host_application_status` | `draft`, `pending`, `under_review`, `approved`, `rejected` |
+| `event_status` | `draft`, `live`, `paused` |
+| `event_mood` | `adventure`, `social`, `wellness`, `chill`, `romantic`, `intellectual`, `foodie`, `nightlife` |
+| `cancellation_policy` | `flexible`, `moderate`, `strict` |
 | `support_ticket_status` | `open`, `in_progress`, `resolved`, `closed` |
+| `support_category` | `report_participant`, `technical_support`, `policy_help` |
+| `report_reason` | `verbal_harassment`, `safety_concern`, `inappropriate_behavior`, `spam_or_scam` |
+| `message_sender_type` | `system`, `host`, `guest` |
 | `fraud_flag_type` | `abnormal_booking_spike`, `payment_abuse`, `suspicious_activity`, `manual_block` |
 
 ### Database Triggers
@@ -718,11 +816,22 @@ All responses follow a standardized JSON envelope:
 
 ### Authentication & User
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/auth/signup` | Register a new user (Firebase UID + email) |
-| `POST` | `/auth/verify-aadhar/init` | Initiate Aadhar OTP verification via Setu |
-| `POST` | `/auth/verify-aadhar/complete` | Submit OTP to complete KYC verification |
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/auth/signup` | — | Register a new user (Firebase UID + email) |
+| `POST` | `/auth/verify-aadhar/init` | 🔒 | Initiate Aadhar OTP verification via Setu |
+| `POST` | `/auth/verify-aadhar/complete` | 🔒 | Submit OTP to complete KYC verification |
+| `GET` | `/users/me` | 🔒 | Get own user profile |
+| `PUT` | `/users/me` | 🔒 | Update own profile (name, avatar_url, city, etc.) |
+
+### Saved Experiences
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/users/saved-experiences` | 🔒 | Save/bookmark an experience |
+| `GET` | `/users/saved-experiences` | 🔒 | List all saved experiences |
+| `GET` | `/users/saved-experiences/{eventID}/check` | 🔒 | Check if an event is saved |
+| `DELETE` | `/users/saved-experiences/{eventID}` | 🔒 | Remove a saved experience |
 
 <details>
 <summary>Request / Response Examples</summary>
@@ -757,30 +866,82 @@ All responses follow a standardized JSON envelope:
 }
 // → 200 { "success": true, "data": { "message": "User verified successfully" } }
 ```
+
+**PUT `/users/me`**
+```json
+{
+  "name": "Jane Doe",
+  "avatar_url": "https://storage.googleapis.com/...",
+  "city": "Mumbai"
+}
+// → 200 updated user profile
+```
 </details>
 
 ### Hosts
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/hosts/` | Create a host profile (requires verified user) |
-| `GET` | `/hosts/me` | Get own host profile |
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/hosts/apply` | 🔒 | Submit host application (status → pending) |
+| `POST` | `/hosts/apply/draft` | 🔒 | Save host application as draft |
+| `GET` | `/hosts/application-status` | 🔒 | Check own application status |
+| `GET` | `/hosts/me` | 🔒 | Get own host profile |
+| `PUT` | `/hosts/me` | 🔒 | Update own host profile |
+| `GET` | `/hosts/dashboard` | 🔒 | Get host dashboard (earnings, ratings, stats) |
 
-### Events
+### Admin (Host Applications)
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/events/` | Create a new event (host only) |
-| `GET` | `/events/host/{hostID}` | List all events for a host |
+> All admin endpoints are protected by the `IsAdmin` middleware, which verifies the Firebase ID token and checks that the caller's email matches the `ADMIN_EMAIL` environment variable.
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/admin/hosts/applications` | 🔒 Admin | List all pending host applications |
+| `POST` | `/admin/hosts/{hostID}/approve` | 🔒 Admin | Approve a host application (status → approved) |
+| `POST` | `/admin/hosts/{hostID}/reject` | 🔒 Admin | Reject a host application (status → rejected) |
+
+<details>
+<summary>Request / Response Examples</summary>
+
+**POST `/admin/hosts/{hostID}/approve`**
+```json
+// Authorization: Bearer <FIREBASE_ID_TOKEN_OF_ADMIN>
+// → 200 { "success": true, "data": { "id": "uuid", "application_status": "approved", ... } }
+```
+
+**POST `/admin/hosts/{hostID}/reject`**
+```json
+{
+  "reason": "Insufficient experience description"
+}
+// Authorization: Bearer <FIREBASE_ID_TOKEN_OF_ADMIN>
+// → 200 { "success": true, "data": { "id": "uuid", "application_status": "rejected", ... } }
+```
+
+</details>
+
+### Events (Experiences)
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/events/` | 🔒 | Create a new event (draft or live) |
+| `PUT` | `/events/{eventID}` | 🔒 | Update an event |
+| `GET` | `/events/{eventID}` | — | Get event details |
+| `GET` | `/events/host/{hostID}` | — | List all events for a host |
+| `GET` | `/events/host/{hostID}/filtered` | — | Filtered search (status, mood, date range) |
+| `GET` | `/events/calendar/{hostID}` | — | Calendar view of events |
+| `POST` | `/events/{eventID}/publish` | 🔒 | Publish a draft event (status → live) |
+| `POST` | `/events/{eventID}/pause` | 🔒 | Pause a live event (status → paused) |
+| `POST` | `/events/{eventID}/resume` | 🔒 | Resume a paused event (status → live) |
+| `GET` | `/events/{eventID}/attendees` | 🔒 | List confirmed attendees for an event |
 
 ### Bookings
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/bookings/` | Book tickets (overbooking-safe, wallet debit, fee split) |
-| `POST` | `/bookings/{bookingID}/confirm` | Confirm a pending booking |
-| `POST` | `/bookings/{bookingID}/cancel` | Cancel booking (full refund to wallet) |
-| `GET` | `/bookings/user/{userID}` | Get booking history for a user |
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/bookings/` | 🔒 | Book tickets (overbooking-safe, wallet debit, fee split) |
+| `POST` | `/bookings/{bookingID}/confirm` | 🔒 | Confirm a pending booking |
+| `POST` | `/bookings/{bookingID}/cancel` | 🔒 | Cancel booking (full refund to wallet) |
+| `GET` | `/bookings/user/{userID}` | 🔒 | Get booking history for a user |
 
 <details>
 <summary>Request Example</summary>
@@ -812,19 +973,43 @@ All responses follow a standardized JSON envelope:
 
 ### Reviews
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/reviews/` | Submit a review for an event |
-| `GET` | `/reviews/event/{eventID}` | List reviews for an event |
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/reviews/` | 🔒 | Submit a review with rating & optional photos |
+| `GET` | `/reviews/event/{eventID}` | — | List reviews for an event |
+| `GET` | `/reviews/event/{eventID}/rating` | — | Get aggregate rating for an event |
 
-### Inbox (Broadcasts)
+### Inbox (Multi-party Messaging)
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/inbox/broadcast` | Host broadcasts a message to event attendees |
-| `GET` | `/inbox/host/{hostID}` | Get all broadcast messages for a host |
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/inbox/send` | 🔒 | Send a message in an event thread |
+| `POST` | `/inbox/broadcast` | 🔒 | Host broadcasts to all event attendees |
+| `GET` | `/inbox/event/{eventID}` | 🔒 | Get all messages for an event thread |
+| `GET` | `/inbox/host/{hostID}` | 🔒 | Get all messages across host's events |
+| `POST` | `/inbox/{messageID}/read` | 🔒 | Mark a message as read |
 
-> Broadcasts are also pushed in real-time via **Socket.IO** to room `event_{eventID}`.
+> Messages support sender types: `system`, `host`, `guest`. Also pushed real-time via **Socket.IO** to room `event_{eventID}`.
+
+### Support
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/support/` | 🔒 | Create support ticket (JSON or multipart with evidence) |
+| `GET` | `/support/{ticketID}` | 🔒 | Get a support ticket by ID |
+| `GET` | `/support/user/{userID}` | 🔒 | List all tickets for a user |
+| `POST` | `/support/{ticketID}/message` | 🔒 | Add a message to a ticket thread |
+| `POST` | `/support/{ticketID}/resolve` | 🔒 | Mark ticket as resolved |
+
+> For **Report a Participant**, set `category=report_participant` and include `event_id`, `session_date`, `report_reason`, `evidence` (files), `is_urgent`.
+
+### File Upload
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/upload/?folder={path}` | 🔒 | Upload files to AWS S3 (max 10MB, SVG/PNG/JPG/PDF) |
+
+Returns `[{ "file_name": "...", "url": "https://...", "size": 12345 }]`
 
 ### Webhooks
 
@@ -853,6 +1038,7 @@ All responses follow a standardized JSON envelope:
 - **Go 1.24+**
 - **PostgreSQL 15+**
 - **Firebase project** with service account credentials
+- **AWS account** with an S3 bucket and IAM credentials
 - **Razorpay account** with RazorpayX (Payouts) enabled
 - **Setu account** for Aadhar OKYC
 
@@ -892,9 +1078,14 @@ Configuration is loaded from environment variables (with `.env` support via godo
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HTTP_PORT` | `5000` | Server listen port |
+| `ADMIN_EMAIL` | — | Email of the admin user (for approve/reject host applications) |
 | `DATABASE_URL` | — | PostgreSQL connection string |
 | `FIREBASE_CREDENTIALS_FILE` | `config/firebase-service-account.json` | Path to Firebase service account JSON |
 | `FIREBASE_PROJECT_ID` | `myslotmate-25994` | Firebase project ID |
+| `AWS_S3_BUCKET` | — | AWS S3 bucket name for file uploads |
+| `AWS_S3_REGION` | `ap-south-1` | AWS S3 region |
+| `AWS_ACCESS_KEY_ID` | — | AWS IAM access key ID |
+| `AWS_SECRET_ACCESS_KEY` | — | AWS IAM secret access key |
 | `SETU_BASE_URL` | `https://uat.setu.co` | Setu OKYC API base URL |
 | `SETU_CLIENT_ID` | — | Setu client ID |
 | `SETU_CLIENT_SECRET` | — | Setu client secret |
@@ -915,6 +1106,9 @@ SQL migration files are in `migrations/` and run in order:
 | `20260228120000_init_schema.sql` | Core schema — 10 tables, enums, triggers (accounts, users, hosts, events, bookings, reviews, payments, inbox, support, fraud) |
 | `20260228130000_add_processing_status.sql` | Adds `processing` to `payment_status` enum |
 | `20260228130001_earnings_payouts_schema.sql` | Adds `platform_settings`, `payout_methods`, `host_earnings` tables; extends `bookings` and `payments` with fee/payout columns |
+| `20260307120000_figma_schema_expansion.sql` | Full Figma expansion — users (avatar, city), hosts (30+ cols), events (25+ cols), reviews (rating), inbox (multi-party), support (category), saved_experiences table, new enums |
+| `20260307130000_support_evidence_upload.sql` | Report-a-participant fields — `report_reason` enum, `event_id`, `session_date`, `evidence_urls`, `is_urgent` on `support_tickets` |
+| `20260307130001_review_photo_urls.sql` | Adds `photo_urls` column to `reviews` for photo attachments |
 
 ```bash
 go run cmd/migrate/run.go

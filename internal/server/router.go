@@ -45,6 +45,9 @@ func NewRouter(
 	inboxCtrl *controller.InboxController,
 	payoutCtrl *controller.PayoutController,
 	webhookCtrl *controller.WebhookController,
+	supportCtrl *controller.SupportController,
+	uploadCtrl *controller.UploadController,
+	adminCtrl *controller.AdminController,
 ) http.Handler {
 	r := chi.NewRouter()
 
@@ -107,6 +110,18 @@ func NewRouter(
 
 	if webhookCtrl != nil {
 		webhookCtrl.RegisterRoutes(r)
+	}
+
+	if supportCtrl != nil {
+		supportCtrl.RegisterRoutes(r)
+	}
+
+	if uploadCtrl != nil {
+		uploadCtrl.RegisterRoutes(r)
+	}
+
+	if adminCtrl != nil {
+		adminCtrl.RegisterRoutes(r)
 	}
 
 	return r

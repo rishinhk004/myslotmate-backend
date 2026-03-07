@@ -11,6 +11,14 @@ type FirebaseConfig struct {
 	ProjectID       string
 }
 
+// S3Config holds AWS S3 settings for file uploads.
+type S3Config struct {
+	Bucket    string
+	Region    string
+	AccessKey string
+	SecretKey string
+}
+
 // DatabaseConfig holds PostgreSQL connection settings.
 type DatabaseConfig struct {
 	URL string // DATABASE_URL, Postgres connection string
@@ -32,11 +40,13 @@ type RazorpayConfig struct {
 }
 
 type Config struct {
-	HTTPPort string
-	Firebase FirebaseConfig
-	Database DatabaseConfig
-	Setu     SetuConfig
-	Razorpay RazorpayConfig
+	HTTPPort   string
+	AdminEmail string
+	Firebase   FirebaseConfig
+	Database   DatabaseConfig
+	Setu       SetuConfig
+	Razorpay   RazorpayConfig
+	S3         S3Config
 }
 
 // Load reads configuration from environment variables (optionally via .env).
@@ -45,10 +55,17 @@ func Load() (*Config, error) {
 	_ = godotenv.Load()
 
 	cfg := &Config{
-		HTTPPort: getEnv("HTTP_PORT", "8080"),
+		HTTPPort:   getEnv("HTTP_PORT", "8080"),
+		AdminEmail: getEnv("ADMIN_EMAIL", ""),
 		Firebase: FirebaseConfig{
 			CredentialsFile: getEnv("FIREBASE_CREDENTIALS_FILE", "config/firebase-service-account.json"),
 			ProjectID:       getEnv("FIREBASE_PROJECT_ID", "myslotmate-25994"),
+		},
+		S3: S3Config{
+			Bucket:    getEnv("AWS_S3_BUCKET", ""),
+			Region:    getEnv("AWS_S3_REGION", "ap-south-1"),
+			AccessKey: getEnv("AWS_ACCESS_KEY_ID", ""),
+			SecretKey: getEnv("AWS_SECRET_ACCESS_KEY", ""),
 		},
 		Database: DatabaseConfig{
 			URL: getEnv("DATABASE_URL", ""),

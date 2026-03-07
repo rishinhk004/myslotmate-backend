@@ -18,8 +18,14 @@ import (
 // UserService defines the business logic interface
 type UserService interface {
 	SignUp(ctx context.Context, req SignUpRequest) (*models.User, error)
+	GetProfile(ctx context.Context, userID uuid.UUID) (*models.User, error)
+	UpdateProfile(ctx context.Context, userID uuid.UUID, req UserProfileUpdateRequest) (*models.User, error)
 	InitiateAadharVerification(ctx context.Context, userID uuid.UUID, aadharNumber string) (string, error)
 	CompleteAadharVerification(ctx context.Context, userID uuid.UUID, transactionID string, otp string) error
+	SaveExperience(ctx context.Context, userID, eventID uuid.UUID) error
+	UnsaveExperience(ctx context.Context, userID, eventID uuid.UUID) error
+	GetSavedExperiences(ctx context.Context, userID uuid.UUID) ([]*models.SavedExperience, error)
+	IsExperienceSaved(ctx context.Context, userID, eventID uuid.UUID) (bool, error)
 }
 
 type SignUpRequest struct {
@@ -29,19 +35,26 @@ type SignUpRequest struct {
 	PhnNumber string
 }
 
+type UserProfileUpdateRequest struct {
+	Name      *string `json:"name,omitempty"`
+	AvatarURL *string `json:"avatar_url,omitempty"`
+	City      *string `json:"city,omitempty"`
+}
+
 // userService implements UserService
 type userService struct {
 	repo           repository.UserRepository
+	savedExpRepo   repository.SavedExperienceRepository
 	workerPool     *worker.WorkerPool
 	dispatcher     *event.Dispatcher
 	aadharProvider identity.AadharProvider
 }
 
 // NewUserService Factory for UserService
-// Dependency Injection: Inject Repository, WorkerPool, Dispatcher (Singleton usually), AadharProvider
-func NewUserService(repo repository.UserRepository, wp *worker.WorkerPool, dispatcher *event.Dispatcher, ap identity.AadharProvider) UserService {
+func NewUserService(repo repository.UserRepository, savedExpRepo repository.SavedExperienceRepository, wp *worker.WorkerPool, dispatcher *event.Dispatcher, ap identity.AadharProvider) UserService {
 	return &userService{
 		repo:           repo,
+		savedExpRepo:   savedExpRepo,
 		workerPool:     wp,
 		dispatcher:     dispatcher,
 		aadharProvider: ap,
@@ -131,4 +144,63 @@ func (s *userService) SignUp(ctx context.Context, req SignUpRequest) (*models.Us
 	})
 
 	return newUser, nil
+}
+
+func (s *userService) GetProfile(ctx context.Context, userID uuid.UUID) (*models.User, error) {
+	user, err := s.repo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		return nil, errors.New("user not found")
+	}
+	return user, nil
+}
+
+func (s *userService) UpdateProfile(ctx context.Context, userID uuid.UUID, req UserProfileUpdateRequest) (*models.User, error) {
+	user, err := s.repo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		return nil, errors.New("user not found")
+	}
+
+	if req.Name != nil {
+		user.Name = *req.Name
+	}
+	if req.AvatarURL != nil {
+		user.AvatarURL = req.AvatarURL
+	}
+	if req.City != nil {
+		user.City = req.City
+	}
+	user.UpdatedAt = time.Now()
+
+	if err := s.repo.Update(ctx, user); err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
+func (s *userService) SaveExperience(ctx context.Context, userID, eventID uuid.UUID) error {
+	se := &models.SavedExperience{
+		ID:      uuid.New(),
+		UserID:  userID,
+		EventID: eventID,
+		SavedAt: time.Now(),
+	}
+	return s.savedExpRepo.Save(ctx, se)
+}
+
+func (s *userService) UnsaveExperience(ctx context.Context, userID, eventID uuid.UUID) error {
+	return s.savedExpRepo.Remove(ctx, userID, eventID)
+}
+
+func (s *userService) GetSavedExperiences(ctx context.Context, userID uuid.UUID) ([]*models.SavedExperience, error) {
+	return s.savedExpRepo.ListByUserID(ctx, userID)
+}
+
+func (s *userService) IsExperienceSaved(ctx context.Context, userID, eventID uuid.UUID) (bool, error) {
+	return s.savedExpRepo.Exists(ctx, userID, eventID)
 }

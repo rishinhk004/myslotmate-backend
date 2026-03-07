@@ -22,18 +22,21 @@ func (c *ReviewController) RegisterRoutes(r chi.Router) {
 	r.Route("/reviews", func(r chi.Router) {
 		r.Post("/", c.CreateReview)
 		r.Get("/event/{eventID}", c.GetEventReviews)
+		r.Get("/event/{eventID}/rating", c.GetAverageRating)
 	})
 }
 
-type CreateReviewRequest struct {
+type CreateReviewRequestBody struct {
 	UserID      uuid.UUID `json:"user_id"`
 	EventID     uuid.UUID `json:"event_id"`
+	Rating      int       `json:"rating"`
 	Name        *string   `json:"name"`
 	Description string    `json:"description"`
+	PhotoURLs   []string  `json:"photo_urls,omitempty"`
 }
 
 func (c *ReviewController) CreateReview(w http.ResponseWriter, r *http.Request) {
-	var req CreateReviewRequest
+	var req CreateReviewRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		RespondError(w, http.StatusBadRequest, "Invalid request payload")
 		return
@@ -41,8 +44,10 @@ func (c *ReviewController) CreateReview(w http.ResponseWriter, r *http.Request) 
 
 	svcReq := service.ReviewCreateRequest{
 		EventID:     req.EventID,
+		Rating:      req.Rating,
 		Name:        req.Name,
 		Description: req.Description,
+		PhotoURLs:   req.PhotoURLs,
 	}
 
 	review, err := c.reviewService.CreateReview(r.Context(), req.UserID, svcReq)
@@ -55,8 +60,7 @@ func (c *ReviewController) CreateReview(w http.ResponseWriter, r *http.Request) 
 }
 
 func (c *ReviewController) GetEventReviews(w http.ResponseWriter, r *http.Request) {
-	eventIDStr := chi.URLParam(r, "eventID")
-	eventID, err := uuid.Parse(eventIDStr)
+	eventID, err := uuid.Parse(chi.URLParam(r, "eventID"))
 	if err != nil {
 		RespondError(w, http.StatusBadRequest, "Invalid event ID")
 		return
@@ -69,4 +73,23 @@ func (c *ReviewController) GetEventReviews(w http.ResponseWriter, r *http.Reques
 	}
 
 	RespondSuccess(w, http.StatusOK, reviews)
+}
+
+func (c *ReviewController) GetAverageRating(w http.ResponseWriter, r *http.Request) {
+	eventID, err := uuid.Parse(chi.URLParam(r, "eventID"))
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid event ID")
+		return
+	}
+
+	avg, count, err := c.reviewService.GetAverageRating(r.Context(), eventID)
+	if err != nil {
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	RespondSuccess(w, http.StatusOK, map[string]interface{}{
+		"average_rating": avg,
+		"total_reviews":  count,
+	})
 }

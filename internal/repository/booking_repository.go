@@ -12,6 +12,7 @@ type BookingRepository interface {
 	Create(ctx context.Context, booking *models.Booking) error
 	GetByID(ctx context.Context, id uuid.UUID) (*models.Booking, error)
 	ListByUserID(ctx context.Context, userID uuid.UUID) ([]*models.Booking, error)
+	ListByEventID(ctx context.Context, eventID uuid.UUID) ([]*models.Booking, error)
 	GetTotalBookedQuantity(ctx context.Context, eventID uuid.UUID) (int, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status models.BookingStatus) error
 }
@@ -56,6 +57,28 @@ func (r *postgresBookingRepository) GetByID(ctx context.Context, id uuid.UUID) (
 func (r *postgresBookingRepository) ListByUserID(ctx context.Context, userID uuid.UUID) ([]*models.Booking, error) {
 	query := `SELECT id, event_id, user_id, quantity, status, payment_id, idempotency_key, amount_cents, service_fee_cents, net_earning_cents, created_at, updated_at, cancelled_at FROM bookings WHERE user_id = $1`
 	rows, err := r.db.QueryContext(ctx, query, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var bookings []*models.Booking
+	for rows.Next() {
+		b := &models.Booking{}
+		if err := rows.Scan(
+			&b.ID, &b.EventID, &b.UserID, &b.Quantity, &b.Status, &b.PaymentID, &b.IdempotencyKey, &b.AmountCents, &b.ServiceFeeCents, &b.NetEarningCents, &b.CreatedAt, &b.UpdatedAt, &b.CancelledAt,
+		); err != nil {
+			return nil, err
+		}
+		bookings = append(bookings, b)
+	}
+	return bookings, nil
+}
+
+func (r *postgresBookingRepository) ListByEventID(ctx context.Context, eventID uuid.UUID) ([]*models.Booking, error) {
+	query := `SELECT id, event_id, user_id, quantity, status, payment_id, idempotency_key, amount_cents, service_fee_cents, net_earning_cents, created_at, updated_at, cancelled_at
+		FROM bookings WHERE event_id = $1 AND status IN ('pending', 'confirmed') ORDER BY created_at ASC`
+	rows, err := r.db.QueryContext(ctx, query, eventID)
 	if err != nil {
 		return nil, err
 	}

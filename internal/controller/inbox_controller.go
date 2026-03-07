@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"myslotmate-backend/internal/models"
 	"myslotmate-backend/internal/service"
 
 	"github.com/go-chi/chi/v5"
@@ -20,19 +21,54 @@ func NewInboxController(s service.InboxService) *InboxController {
 
 func (c *InboxController) RegisterRoutes(r chi.Router) {
 	r.Route("/inbox", func(r chi.Router) {
+		r.Post("/send", c.SendMessage)
 		r.Post("/broadcast", c.BroadcastMessage)
+		r.Get("/event/{eventID}", c.GetEventMessages)
 		r.Get("/host/{hostID}", c.GetHostMessages)
+		r.Post("/{messageID}/read", c.MarkRead)
 	})
 }
 
-type BroadcastRequest struct {
-	HostID  uuid.UUID `json:"host_id"` // Auth context
+type SendMessageRequestBody struct {
+	EventID       uuid.UUID                `json:"event_id"`
+	SenderType    models.MessageSenderType `json:"sender_type"`
+	SenderID      *uuid.UUID               `json:"sender_id,omitempty"`
+	Message       string                   `json:"message"`
+	AttachmentURL *string                  `json:"attachment_url,omitempty"`
+}
+
+type BroadcastRequestBody struct {
+	HostID  uuid.UUID `json:"host_id"`
 	EventID uuid.UUID `json:"event_id"`
 	Message string    `json:"message"`
 }
 
+func (c *InboxController) SendMessage(w http.ResponseWriter, r *http.Request) {
+	var req SendMessageRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	svcReq := service.SendMessageRequest{
+		EventID:       req.EventID,
+		SenderType:    req.SenderType,
+		SenderID:      req.SenderID,
+		Message:       req.Message,
+		AttachmentURL: req.AttachmentURL,
+	}
+
+	msg, err := c.inboxService.SendMessage(r.Context(), svcReq)
+	if err != nil {
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	RespondSuccess(w, http.StatusCreated, msg)
+}
+
 func (c *InboxController) BroadcastMessage(w http.ResponseWriter, r *http.Request) {
-	var req BroadcastRequest
+	var req BroadcastRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		RespondError(w, http.StatusBadRequest, "Invalid request payload")
 		return
@@ -52,9 +88,24 @@ func (c *InboxController) BroadcastMessage(w http.ResponseWriter, r *http.Reques
 	RespondSuccess(w, http.StatusCreated, msg)
 }
 
+func (c *InboxController) GetEventMessages(w http.ResponseWriter, r *http.Request) {
+	eventID, err := uuid.Parse(chi.URLParam(r, "eventID"))
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid event ID")
+		return
+	}
+
+	msgs, err := c.inboxService.GetEventMessages(r.Context(), eventID)
+	if err != nil {
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	RespondSuccess(w, http.StatusOK, msgs)
+}
+
 func (c *InboxController) GetHostMessages(w http.ResponseWriter, r *http.Request) {
-	hostIDStr := chi.URLParam(r, "hostID")
-	hostID, err := uuid.Parse(hostIDStr)
+	hostID, err := uuid.Parse(chi.URLParam(r, "hostID"))
 	if err != nil {
 		RespondError(w, http.StatusBadRequest, "Invalid host ID")
 		return
@@ -67,4 +118,19 @@ func (c *InboxController) GetHostMessages(w http.ResponseWriter, r *http.Request
 	}
 
 	RespondSuccess(w, http.StatusOK, msgs)
+}
+
+func (c *InboxController) MarkRead(w http.ResponseWriter, r *http.Request) {
+	messageID, err := uuid.Parse(chi.URLParam(r, "messageID"))
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid message ID")
+		return
+	}
+
+	if err := c.inboxService.MarkRead(r.Context(), messageID); err != nil {
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	RespondSuccess(w, http.StatusOK, map[string]string{"message": "marked as read"})
 }

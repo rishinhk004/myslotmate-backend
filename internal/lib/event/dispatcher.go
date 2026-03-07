@@ -10,6 +10,8 @@ type EventName string
 const (
 	UserCreated          EventName = "user_created"
 	HostCreated          EventName = "host_created"
+	HostApproved         EventName = "host_approved"
+	HostRejected         EventName = "host_rejected"
 	EventCreated         EventName = "event_created"
 	BookingCreated       EventName = "booking_created"
 	BookingConfirmed     EventName = "booking_confirmed"
