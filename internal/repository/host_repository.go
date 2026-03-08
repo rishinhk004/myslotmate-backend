@@ -30,7 +30,7 @@ var hostColumns = `id, user_id, account_id,
 	first_name, last_name, phn_number, city, avatar_url, tagline, bio,
 	application_status, experience_desc, moods, description, preferred_days, group_size,
 	government_id_url, submitted_at, approved_at, rejected_at,
-	is_identity_verified, is_email_verified, is_phone_verified, is_super_host, is_community_champ,
+	is_identity_verified, is_super_host, is_community_champ,
 	expertise_tags, social_instagram, social_linkedin, social_website,
 	avg_rating, total_reviews,
 	created_at, updated_at`
@@ -44,7 +44,7 @@ func scanHost(row interface {
 		&h.FirstName, &h.LastName, &h.PhnNumber, &h.City, &h.AvatarURL, &h.Tagline, &h.Bio,
 		&h.ApplicationStatus, &h.ExperienceDesc, &h.Moods, &h.Description, &h.PreferredDays, &h.GroupSize,
 		&h.GovernmentIDURL, &h.SubmittedAt, &h.ApprovedAt, &h.RejectedAt,
-		&h.IsIdentityVerified, &h.IsEmailVerified, &h.IsPhoneVerified, &h.IsSuperHost, &h.IsCommunityChamp,
+		&h.IsIdentityVerified, &h.IsSuperHost, &h.IsCommunityChamp,
 		&h.ExpertiseTags, &h.SocialInstagram, &h.SocialLinkedin, &h.SocialWebsite,
 		&h.AvgRating, &h.TotalReviews,
 		&h.CreatedAt, &h.UpdatedAt,
@@ -106,16 +106,16 @@ func (r *postgresHostRepository) Update(ctx context.Context, host *models.Host) 
 			first_name = $1, last_name = $2, phn_number = $3, city = $4, avatar_url = $5, tagline = $6, bio = $7,
 			application_status = $8, experience_desc = $9, moods = $10, description = $11, preferred_days = $12, group_size = $13,
 			government_id_url = $14, submitted_at = $15, approved_at = $16, rejected_at = $17,
-			is_identity_verified = $18, is_email_verified = $19, is_phone_verified = $20, is_super_host = $21, is_community_champ = $22,
-			expertise_tags = $23, social_instagram = $24, social_linkedin = $25, social_website = $26,
-			avg_rating = $27, total_reviews = $28
-		WHERE id = $29
+			is_identity_verified = $18, is_super_host = $19, is_community_champ = $20,
+			expertise_tags = $21, social_instagram = $22, social_linkedin = $23, social_website = $24,
+			avg_rating = $25, total_reviews = $26
+		WHERE id = $27
 	`
 	_, err := r.db.ExecContext(ctx, query,
 		host.FirstName, host.LastName, host.PhnNumber, host.City, host.AvatarURL, host.Tagline, host.Bio,
 		host.ApplicationStatus, host.ExperienceDesc, pq.Array(host.Moods), host.Description, pq.Array(host.PreferredDays), host.GroupSize,
 		host.GovernmentIDURL, host.SubmittedAt, host.ApprovedAt, host.RejectedAt,
-		host.IsIdentityVerified, host.IsEmailVerified, host.IsPhoneVerified, host.IsSuperHost, host.IsCommunityChamp,
+		host.IsIdentityVerified, host.IsSuperHost, host.IsCommunityChamp,
 		pq.Array(host.ExpertiseTags), host.SocialInstagram, host.SocialLinkedin, host.SocialWebsite,
 		host.AvgRating, host.TotalReviews,
 		host.ID,

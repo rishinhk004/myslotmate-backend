@@ -36,8 +36,6 @@ type Host struct {
 
 	// ── Trust & Safety badges ───────────────────────────────────────────────
 	IsIdentityVerified bool `db:"is_identity_verified" json:"is_identity_verified"`
-	IsEmailVerified    bool `db:"is_email_verified" json:"is_email_verified"`
-	IsPhoneVerified    bool `db:"is_phone_verified" json:"is_phone_verified"`
 	IsSuperHost        bool `db:"is_super_host" json:"is_super_host"`
 	IsCommunityChamp   bool `db:"is_community_champ" json:"is_community_champ"`
 

@@ -113,11 +113,11 @@ func main() {
 	})
 	log.Println("Using Setu Aadhar Provider")
 
-	userService := service.NewUserService(userRepo, savedExpRepo, workerPool, dispatcher, aadharProvider)
-	hostService := service.NewHostService(hostRepo, userRepo, eventRepo, bookingRepo, payoutRepo, dispatcher)
+	userService := service.NewUserService(userRepo, hostRepo, savedExpRepo, workerPool, dispatcher, aadharProvider)
+	hostService := service.NewHostService(hostRepo, userRepo, eventRepo, bookingRepo, reviewRepo, payoutRepo, accountRepo, dispatcher)
 	eventService := service.NewEventService(eventRepo, bookingRepo, dispatcher)
 	bookingService := service.NewBookingService(bookingRepo, eventRepo, accountRepo, paymentRepo, payoutRepo, hostRepo, dispatcher)
-	reviewService := service.NewReviewService(reviewRepo, dispatcher)
+	reviewService := service.NewReviewService(reviewRepo, eventRepo, dispatcher)
 	inboxService := service.NewInboxService(inboxRepo, eventRepo, socketService)
 	supportService := service.NewSupportService(supportRepo)
 

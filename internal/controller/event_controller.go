@@ -29,6 +29,7 @@ func (c *EventController) RegisterRoutes(r chi.Router) {
 		r.Get("/host/{hostID}", c.GetHostEvents)
 		r.Get("/host/{hostID}/filtered", c.GetHostEventsFiltered)
 		r.Get("/calendar/{hostID}", c.GetCalendarEvents)
+		r.Get("/today/{hostID}", c.GetTodaySchedule)
 		r.Post("/{eventID}/publish", c.PublishEvent)
 		r.Post("/{eventID}/pause", c.PauseEvent)
 		r.Post("/{eventID}/resume", c.ResumeEvent)
@@ -279,6 +280,22 @@ func (c *EventController) GetCalendarEvents(w http.ResponseWriter, r *http.Reque
 	}
 
 	events, err := c.eventService.GetCalendarEvents(r.Context(), hostID, start, end)
+	if err != nil {
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	RespondSuccess(w, http.StatusOK, events)
+}
+
+func (c *EventController) GetTodaySchedule(w http.ResponseWriter, r *http.Request) {
+	hostID, err := uuid.Parse(chi.URLParam(r, "hostID"))
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid host ID")
+		return
+	}
+
+	events, err := c.eventService.GetTodaySchedule(r.Context(), hostID)
 	if err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
 		return

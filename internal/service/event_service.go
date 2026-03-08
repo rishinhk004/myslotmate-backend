@@ -20,6 +20,7 @@ type EventService interface {
 	GetHostEvents(ctx context.Context, hostID uuid.UUID) ([]*models.Event, error)
 	GetHostEventsFiltered(ctx context.Context, hostID uuid.UUID, status *models.EventStatus, search string, sortBy string, limit, offset int) ([]*models.Event, error)
 	GetCalendarEvents(ctx context.Context, hostID uuid.UUID, start, end time.Time) ([]*models.Event, error)
+	GetTodaySchedule(ctx context.Context, hostID uuid.UUID) ([]*models.Event, error)
 	PublishEvent(ctx context.Context, eventID uuid.UUID, hostID uuid.UUID) (*models.Event, error)
 	PauseEvent(ctx context.Context, eventID uuid.UUID, hostID uuid.UUID) (*models.Event, error)
 	ResumeEvent(ctx context.Context, eventID uuid.UUID, hostID uuid.UUID) (*models.Event, error)
@@ -236,6 +237,13 @@ func (s *eventService) GetHostEventsFiltered(ctx context.Context, hostID uuid.UU
 
 func (s *eventService) GetCalendarEvents(ctx context.Context, hostID uuid.UUID, start, end time.Time) ([]*models.Event, error) {
 	return s.eventRepo.ListByDateRange(ctx, hostID, start, end)
+}
+
+func (s *eventService) GetTodaySchedule(ctx context.Context, hostID uuid.UUID) ([]*models.Event, error) {
+	now := time.Now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	dayEnd := dayStart.Add(24 * time.Hour)
+	return s.eventRepo.ListTodayByHostID(ctx, hostID, dayStart, dayEnd)
 }
 
 func (s *eventService) PublishEvent(ctx context.Context, eventID uuid.UUID, hostID uuid.UUID) (*models.Event, error) {

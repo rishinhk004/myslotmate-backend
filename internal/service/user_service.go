@@ -44,6 +44,7 @@ type UserProfileUpdateRequest struct {
 // userService implements UserService
 type userService struct {
 	repo           repository.UserRepository
+	hostRepo       repository.HostRepository
 	savedExpRepo   repository.SavedExperienceRepository
 	workerPool     *worker.WorkerPool
 	dispatcher     *event.Dispatcher
@@ -51,9 +52,10 @@ type userService struct {
 }
 
 // NewUserService Factory for UserService
-func NewUserService(repo repository.UserRepository, savedExpRepo repository.SavedExperienceRepository, wp *worker.WorkerPool, dispatcher *event.Dispatcher, ap identity.AadharProvider) UserService {
+func NewUserService(repo repository.UserRepository, hostRepo repository.HostRepository, savedExpRepo repository.SavedExperienceRepository, wp *worker.WorkerPool, dispatcher *event.Dispatcher, ap identity.AadharProvider) UserService {
 	return &userService{
 		repo:           repo,
+		hostRepo:       hostRepo,
 		savedExpRepo:   savedExpRepo,
 		workerPool:     wp,
 		dispatcher:     dispatcher,

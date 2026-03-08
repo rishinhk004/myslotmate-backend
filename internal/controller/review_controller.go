@@ -23,6 +23,7 @@ func (c *ReviewController) RegisterRoutes(r chi.Router) {
 		r.Post("/", c.CreateReview)
 		r.Get("/event/{eventID}", c.GetEventReviews)
 		r.Get("/event/{eventID}/rating", c.GetAverageRating)
+		r.Get("/host/{hostID}", c.GetHostReviews)
 	})
 }
 
@@ -92,4 +93,20 @@ func (c *ReviewController) GetAverageRating(w http.ResponseWriter, r *http.Reque
 		"average_rating": avg,
 		"total_reviews":  count,
 	})
+}
+
+func (c *ReviewController) GetHostReviews(w http.ResponseWriter, r *http.Request) {
+	hostID, err := uuid.Parse(chi.URLParam(r, "hostID"))
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid host ID")
+		return
+	}
+
+	reviews, err := c.reviewService.GetHostReviews(r.Context(), hostID)
+	if err != nil {
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	RespondSuccess(w, http.StatusOK, reviews)
 }

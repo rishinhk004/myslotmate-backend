@@ -6,6 +6,7 @@ import (
 	"myslotmate-backend/internal/models"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 type BookingRepository interface {
@@ -15,6 +16,8 @@ type BookingRepository interface {
 	ListByEventID(ctx context.Context, eventID uuid.UUID) ([]*models.Booking, error)
 	GetTotalBookedQuantity(ctx context.Context, eventID uuid.UUID) (int, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status models.BookingStatus) error
+	ListRecentCancelledByEventIDs(ctx context.Context, eventIDs []uuid.UUID, limit int) ([]*models.Booking, error)
+	CountConfirmedByEventIDs(ctx context.Context, eventIDs []uuid.UUID) (int, error)
 }
 
 type postgresBookingRepository struct {
@@ -111,4 +114,39 @@ func (r *postgresBookingRepository) UpdateStatus(ctx context.Context, id uuid.UU
 	}
 	_, err := r.db.ExecContext(ctx, query, status, id)
 	return err
+}
+
+func (r *postgresBookingRepository) ListRecentCancelledByEventIDs(ctx context.Context, eventIDs []uuid.UUID, limit int) ([]*models.Booking, error) {
+	if len(eventIDs) == 0 {
+		return nil, nil
+	}
+	query := `SELECT id, event_id, user_id, quantity, status, payment_id, idempotency_key, amount_cents, service_fee_cents, net_earning_cents, created_at, updated_at, cancelled_at
+		FROM bookings WHERE event_id = ANY($1) AND status = 'cancelled' ORDER BY cancelled_at DESC LIMIT $2`
+	rows, err := r.db.QueryContext(ctx, query, pq.Array(eventIDs), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var bookings []*models.Booking
+	for rows.Next() {
+		b := &models.Booking{}
+		if err := rows.Scan(
+			&b.ID, &b.EventID, &b.UserID, &b.Quantity, &b.Status, &b.PaymentID, &b.IdempotencyKey, &b.AmountCents, &b.ServiceFeeCents, &b.NetEarningCents, &b.CreatedAt, &b.UpdatedAt, &b.CancelledAt,
+		); err != nil {
+			return nil, err
+		}
+		bookings = append(bookings, b)
+	}
+	return bookings, rows.Err()
+}
+
+func (r *postgresBookingRepository) CountConfirmedByEventIDs(ctx context.Context, eventIDs []uuid.UUID) (int, error) {
+	if len(eventIDs) == 0 {
+		return 0, nil
+	}
+	var count int
+	query := `SELECT COUNT(*) FROM bookings WHERE event_id = ANY($1) AND status = 'confirmed'`
+	err := r.db.QueryRowContext(ctx, query, pq.Array(eventIDs)).Scan(&count)
+	return count, err
 }

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"myslotmate-backend/internal/lib/event"
@@ -28,8 +29,18 @@ type HostService interface {
 	GetHostByUserID(ctx context.Context, userID uuid.UUID) (*models.Host, error)
 	UpdateProfile(ctx context.Context, hostID uuid.UUID, req HostProfileUpdateRequest) (*models.Host, error)
 
+	// Social media connect/disconnect
+	ConnectSocial(ctx context.Context, hostID uuid.UUID, req SocialConnectRequest) (*models.Host, error)
+	DisconnectSocial(ctx context.Context, hostID uuid.UUID, platform string) (*models.Host, error)
+
 	// Dashboard overview
 	GetDashboardOverview(ctx context.Context, hostID uuid.UUID) (*HostDashboardOverview, error)
+
+	// Attention items
+	GetAttentionItems(ctx context.Context, hostID uuid.UUID) (*HostAttentionItems, error)
+
+	// Earnings breakdown
+	GetEarningsBreakdown(ctx context.Context, hostID uuid.UUID) (*HostEarningsBreakdown, error)
 }
 
 // HostApplicationRequest maps to the "Become a Host" form (Steps 1 & 2).
@@ -67,12 +78,52 @@ type HostDashboardOverview struct {
 	TotalReviews    int     `json:"total_reviews"`
 }
 
+// SocialConnectRequest maps to social media connect/url-submit.
+type SocialConnectRequest struct {
+	Platform string `json:"platform"` // "instagram", "youtube", "twitter", "linkedin", "website"
+	URL      string `json:"url"`
+}
+
+// AttentionItem represents a single item that needs the host's attention.
+type AttentionItem struct {
+	Type    string      `json:"type"` // "cancelled_booking", "pending_review", "unread_message", "low_rating"
+	Count   int         `json:"count"`
+	Message string      `json:"message"`
+	Data    interface{} `json:"data,omitempty"`
+}
+
+// HostAttentionItems aggregates all items needing the host's attention.
+type HostAttentionItems struct {
+	Items      []AttentionItem `json:"items"`
+	TotalCount int             `json:"total_count"`
+}
+
+// EarningsBreakdownItem represents earnings for a single event.
+type EarningsBreakdownItem struct {
+	EventID       uuid.UUID `json:"event_id"`
+	EventTitle    string    `json:"event_title"`
+	TotalBookings int       `json:"total_bookings"`
+	GrossEarnings int64     `json:"gross_earnings_cents"`
+	ServiceFee    int64     `json:"service_fee_cents"`
+	NetEarnings   int64     `json:"net_earnings_cents"`
+}
+
+// HostEarningsBreakdown contains per-event earnings detail.
+type HostEarningsBreakdown struct {
+	TotalEarningsCents    int64                   `json:"total_earnings_cents"`
+	PendingClearanceCents int64                   `json:"pending_clearance_cents"`
+	AvailableBalanceCents int64                   `json:"available_balance_cents"`
+	Events                []EarningsBreakdownItem `json:"events"`
+}
+
 type hostService struct {
 	hostRepo    repository.HostRepository
 	userRepo    repository.UserRepository
 	eventRepo   repository.EventRepository
 	bookingRepo repository.BookingRepository
+	reviewRepo  repository.ReviewRepository
 	payoutRepo  repository.PayoutRepository
+	accountRepo repository.AccountRepository
 	dispatcher  *event.Dispatcher
 }
 
@@ -81,7 +132,9 @@ func NewHostService(
 	ur repository.UserRepository,
 	er repository.EventRepository,
 	br repository.BookingRepository,
+	rr repository.ReviewRepository,
 	pr repository.PayoutRepository,
+	ar repository.AccountRepository,
 	d *event.Dispatcher,
 ) HostService {
 	return &hostService{
@@ -89,7 +142,9 @@ func NewHostService(
 		userRepo:    ur,
 		eventRepo:   er,
 		bookingRepo: br,
+		reviewRepo:  rr,
 		payoutRepo:  pr,
+		accountRepo: ar,
 		dispatcher:  d,
 	}
 }
@@ -314,4 +369,220 @@ func (s *hostService) RejectApplication(ctx context.Context, hostID uuid.UUID, r
 
 func (s *hostService) ListPendingApplications(ctx context.Context) ([]*models.Host, error) {
 	return s.hostRepo.ListByStatus(ctx, models.HostApplicationPending)
+}
+
+// ── Social Connect / Disconnect ─────────────────────────────────────────────
+
+func (s *hostService) ConnectSocial(ctx context.Context, hostID uuid.UUID, req SocialConnectRequest) (*models.Host, error) {
+	host, err := s.hostRepo.GetByID(ctx, hostID)
+	if err != nil {
+		return nil, err
+	}
+	if host == nil {
+		return nil, errors.New("host not found")
+	}
+
+	switch req.Platform {
+	case "instagram":
+		host.SocialInstagram = &req.URL
+	case "linkedin":
+		host.SocialLinkedin = &req.URL
+	case "website":
+		host.SocialWebsite = &req.URL
+	case "youtube":
+		// YouTube stored in SocialWebsite as secondary, or add a field.
+		// For now, use a convention: store in social_website with prefix.
+		url := req.URL
+		host.SocialWebsite = &url
+	case "twitter":
+		// Same pattern — stored in social_website for now.
+		url := req.URL
+		host.SocialWebsite = &url
+	default:
+		return nil, errors.New("unsupported platform: " + req.Platform)
+	}
+
+	host.UpdatedAt = time.Now()
+	if err := s.hostRepo.Update(ctx, host); err != nil {
+		return nil, err
+	}
+	return host, nil
+}
+
+func (s *hostService) DisconnectSocial(ctx context.Context, hostID uuid.UUID, platform string) (*models.Host, error) {
+	host, err := s.hostRepo.GetByID(ctx, hostID)
+	if err != nil {
+		return nil, err
+	}
+	if host == nil {
+		return nil, errors.New("host not found")
+	}
+
+	switch platform {
+	case "instagram":
+		host.SocialInstagram = nil
+	case "linkedin":
+		host.SocialLinkedin = nil
+	case "website", "youtube", "twitter":
+		host.SocialWebsite = nil
+	default:
+		return nil, errors.New("unsupported platform: " + platform)
+	}
+
+	host.UpdatedAt = time.Now()
+	if err := s.hostRepo.Update(ctx, host); err != nil {
+		return nil, err
+	}
+	return host, nil
+}
+
+// ── Attention Items ─────────────────────────────────────────────────────────
+
+func (s *hostService) GetAttentionItems(ctx context.Context, hostID uuid.UUID) (*HostAttentionItems, error) {
+	host, err := s.hostRepo.GetByID(ctx, hostID)
+	if err != nil {
+		return nil, err
+	}
+	if host == nil {
+		return nil, errors.New("host not found")
+	}
+
+	var items []AttentionItem
+
+	// 1. Get all event IDs for this host
+	eventIDs, err := s.eventRepo.ListByHostIDForIDs(ctx, hostID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. Recently cancelled bookings
+	if len(eventIDs) > 0 {
+		cancelled, err := s.bookingRepo.ListRecentCancelledByEventIDs(ctx, eventIDs, 10)
+		if err != nil {
+			return nil, err
+		}
+		if len(cancelled) > 0 {
+			items = append(items, AttentionItem{
+				Type:    "cancelled_booking",
+				Count:   len(cancelled),
+				Message: fmt.Sprintf("You have %d recently cancelled booking(s)", len(cancelled)),
+				Data:    cancelled,
+			})
+		}
+	}
+
+	// 3. Pending reviews (confirmed bookings without reviews)
+	if len(eventIDs) > 0 {
+		confirmedCount, err := s.bookingRepo.CountConfirmedByEventIDs(ctx, eventIDs)
+		if err != nil {
+			return nil, err
+		}
+		pendingReviews, err := s.reviewRepo.CountPendingReviewsByEventIDs(ctx, eventIDs, confirmedCount)
+		if err != nil {
+			return nil, err
+		}
+		if pendingReviews > 0 {
+			items = append(items, AttentionItem{
+				Type:    "pending_review",
+				Count:   pendingReviews,
+				Message: fmt.Sprintf("%d booking(s) awaiting guest reviews", pendingReviews),
+			})
+		}
+	}
+
+	// 4. Low rating warning
+	if host.AvgRating != nil && *host.AvgRating < 3.5 && host.TotalReviews > 0 {
+		items = append(items, AttentionItem{
+			Type:    "low_rating",
+			Count:   1,
+			Message: fmt.Sprintf("Your average rating is %.1f — consider improving guest experience", *host.AvgRating),
+		})
+	}
+
+	totalCount := 0
+	for _, item := range items {
+		totalCount += item.Count
+	}
+
+	return &HostAttentionItems{
+		Items:      items,
+		TotalCount: totalCount,
+	}, nil
+}
+
+// ── Earnings Breakdown ──────────────────────────────────────────────────────
+
+func (s *hostService) GetEarningsBreakdown(ctx context.Context, hostID uuid.UUID) (*HostEarningsBreakdown, error) {
+	host, err := s.hostRepo.GetByID(ctx, hostID)
+	if err != nil {
+		return nil, err
+	}
+	if host == nil {
+		return nil, errors.New("host not found")
+	}
+
+	// Get aggregate earnings
+	earnings, err := s.payoutRepo.GetHostEarnings(ctx, hostID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get host account balance
+	var availableBalance int64
+	if s.accountRepo != nil {
+		account, err := s.accountRepo.GetByOwner(ctx, models.AccountOwnerHost, hostID)
+		if err == nil && account != nil {
+			availableBalance = account.BalanceCents
+		}
+	}
+
+	// Get all events for this host with booking data
+	events, err := s.eventRepo.ListByHostID(ctx, hostID)
+	if err != nil {
+		return nil, err
+	}
+
+	var breakdownItems []EarningsBreakdownItem
+	for _, evt := range events {
+		// Get bookings for this event
+		bookings, err := s.bookingRepo.ListByEventID(ctx, evt.ID)
+		if err != nil {
+			continue
+		}
+
+		var grossEarnings, serviceFee, netEarnings int64
+		for _, b := range bookings {
+			if b.AmountCents != nil {
+				grossEarnings += *b.AmountCents
+			}
+			if b.ServiceFeeCents != nil {
+				serviceFee += *b.ServiceFeeCents
+			}
+			if b.NetEarningCents != nil {
+				netEarnings += *b.NetEarningCents
+			}
+		}
+
+		if len(bookings) > 0 {
+			breakdownItems = append(breakdownItems, EarningsBreakdownItem{
+				EventID:       evt.ID,
+				EventTitle:    evt.Title,
+				TotalBookings: len(bookings),
+				GrossEarnings: grossEarnings,
+				ServiceFee:    serviceFee,
+				NetEarnings:   netEarnings,
+			})
+		}
+	}
+
+	result := &HostEarningsBreakdown{
+		Events: breakdownItems,
+	}
+	if earnings != nil {
+		result.TotalEarningsCents = earnings.TotalEarningsCents
+		result.PendingClearanceCents = earnings.PendingClearanceCents
+	}
+	result.AvailableBalanceCents = availableBalance
+
+	return result, nil
 }

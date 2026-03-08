@@ -27,7 +27,6 @@ func (c *UserController) RegisterRoutes(r chi.Router) {
 	r.Post("/auth/signup", c.HandleSignUp)
 	r.Post("/auth/verify-aadhar/init", c.InitiateAadharVerification)
 	r.Post("/auth/verify-aadhar/complete", c.CompleteAadharVerification)
-
 	r.Route("/users", func(r chi.Router) {
 		r.Get("/me", c.GetProfile)
 		r.Put("/me", c.UpdateProfile)

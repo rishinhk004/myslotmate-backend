@@ -16,6 +16,7 @@ type ReviewService interface {
 	CreateReview(ctx context.Context, userID uuid.UUID, req ReviewCreateRequest) (*models.Review, error)
 	GetEventReviews(ctx context.Context, eventID uuid.UUID) ([]*models.Review, error)
 	GetAverageRating(ctx context.Context, eventID uuid.UUID) (float64, int, error)
+	GetHostReviews(ctx context.Context, hostID uuid.UUID) ([]*models.Review, error)
 }
 
 type ReviewCreateRequest struct {
@@ -28,12 +29,14 @@ type ReviewCreateRequest struct {
 
 type reviewService struct {
 	reviewRepo repository.ReviewRepository
+	eventRepo  repository.EventRepository
 	dispatcher *event.Dispatcher
 }
 
-func NewReviewService(rr repository.ReviewRepository, d *event.Dispatcher) ReviewService {
+func NewReviewService(rr repository.ReviewRepository, er repository.EventRepository, d *event.Dispatcher) ReviewService {
 	return &reviewService{
 		reviewRepo: rr,
+		eventRepo:  er,
 		dispatcher: d,
 	}
 }
@@ -74,4 +77,16 @@ func (s *reviewService) GetEventReviews(ctx context.Context, eventID uuid.UUID) 
 
 func (s *reviewService) GetAverageRating(ctx context.Context, eventID uuid.UUID) (float64, int, error) {
 	return s.reviewRepo.GetAverageRating(ctx, eventID)
+}
+
+func (s *reviewService) GetHostReviews(ctx context.Context, hostID uuid.UUID) ([]*models.Review, error) {
+	// Get all event IDs for this host
+	eventIDs, err := s.eventRepo.ListByHostIDForIDs(ctx, hostID)
+	if err != nil {
+		return nil, err
+	}
+	if len(eventIDs) == 0 {
+		return []*models.Review{}, nil
+	}
+	return s.reviewRepo.ListByEventIDs(ctx, eventIDs)
 }

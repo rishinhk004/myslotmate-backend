@@ -455,6 +455,138 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /hosts/me/social:
+    put:
+      tags: [Hosts]
+      summary: Connect a social media account (submit URL)
+      operationId: connectSocial
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, platform, url]
+              properties:
+                user_id:
+                  type: string
+                  format: uuid
+                platform:
+                  type: string
+                  enum: [instagram, linkedin, website, youtube, twitter]
+                url:
+                  type: string
+                  example: https://instagram.com/myhost
+      responses:
+        "200":
+          description: Social link updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Host"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /hosts/me/social/{platform}:
+    delete:
+      tags: [Hosts]
+      summary: Disconnect a social media account
+      operationId: disconnectSocial
+      parameters:
+        - name: platform
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [instagram, linkedin, website, youtube, twitter]
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Social link removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Host"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /hosts/attention-items:
+    get:
+      tags: [Hosts]
+      summary: Get items needing host attention (cancelled bookings, pending reviews, etc.)
+      operationId: getAttentionItems
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Attention items
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: "#/components/schemas/HostAttentionItems"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /hosts/earnings/breakdown:
+    get:
+      tags: [Hosts]
+      summary: Get per-event earnings breakdown
+      operationId: getEarningsBreakdown
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Earnings breakdown by event
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: "#/components/schemas/HostEarningsBreakdown"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   # ── Admin (Host Applications) ───────────────
   /admin/hosts/applications:
     get:
@@ -1130,6 +1262,54 @@ paths:
                         format: double
                       total_reviews:
                         type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /events/today/{hostID}:
+    get:
+      tags: [Events]
+      summary: Get today's schedule for a host
+      operationId: getTodaySchedule
+      parameters:
+        - name: hostID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Today's events
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_EventList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /reviews/host/{hostID}:
+    get:
+      tags: [Reviews]
+      summary: Get all reviews for a host (public endpoint)
+      operationId: getHostReviews
+      parameters:
+        - name: hostID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: All reviews across all host events
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_ReviewList"
         "400":
           $ref: "#/components/responses/BadRequest"
         "500":
@@ -2226,10 +2406,6 @@ components:
           nullable: true
         is_identity_verified:
           type: boolean
-        is_email_verified:
-          type: boolean
-        is_phone_verified:
-          type: boolean
         is_super_host:
           type: boolean
         is_community_champ:
@@ -2669,6 +2845,66 @@ components:
           type: integer
         total_bookings:
           type: integer
+
+    HostAttentionItems:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AttentionItem"
+        total_count:
+          type: integer
+
+    AttentionItem:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [cancelled_booking, pending_review, unread_message, low_rating]
+        count:
+          type: integer
+        message:
+          type: string
+        data:
+          description: Optional payload (e.g., list of cancelled bookings)
+
+    HostEarningsBreakdown:
+      type: object
+      properties:
+        total_earnings_cents:
+          type: integer
+          format: int64
+        pending_clearance_cents:
+          type: integer
+          format: int64
+        available_balance_cents:
+          type: integer
+          format: int64
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/EarningsBreakdownItem"
+
+    EarningsBreakdownItem:
+      type: object
+      properties:
+        event_id:
+          type: string
+          format: uuid
+        event_title:
+          type: string
+        total_bookings:
+          type: integer
+        gross_earnings_cents:
+          type: integer
+          format: int64
+        service_fee_cents:
+          type: integer
+          format: int64
+        net_earnings_cents:
+          type: integer
+          format: int64
 
     # ── Enums ─────────────────────────────────
     BookingStatus:

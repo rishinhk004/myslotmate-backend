@@ -35,23 +35,26 @@ func main() {
 	}
 	log.Printf("connecting to database (%s)...", url)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	connCtx, connCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer connCancel()
 
-	sqlDB, err := db.OpenWithContext(ctx, cfg.Database.URL)
+	sqlDB, err := db.OpenWithContext(connCtx, cfg.Database.URL)
 	if err != nil {
 		log.Fatalf("database connection failed: %v", err)
 	}
 	defer sqlDB.Close()
 
+	queryCtx, queryCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer queryCancel()
+
 	var one int
-	err = sqlDB.QueryRowContext(ctx, "SELECT 1").Scan(&one)
+	err = sqlDB.QueryRowContext(queryCtx, "SELECT 1").Scan(&one)
 	if err != nil {
 		log.Fatalf("query failed: %v", err)
 	}
 
 	var dbName string
-	err = sqlDB.QueryRowContext(ctx, "SELECT current_database()").Scan(&dbName)
+	err = sqlDB.QueryRowContext(queryCtx, "SELECT current_database()").Scan(&dbName)
 	if err != nil {
 		log.Printf("could not get database name: %v", err)
 		dbName = "unknown"

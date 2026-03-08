@@ -19,6 +19,8 @@ type EventRepository interface {
 	ListByHostID(ctx context.Context, hostID uuid.UUID) ([]*models.Event, error)
 	ListByHostIDFiltered(ctx context.Context, hostID uuid.UUID, status *models.EventStatus, search string, sortBy string, limit, offset int) ([]*models.Event, error)
 	ListByDateRange(ctx context.Context, hostID uuid.UUID, start, end time.Time) ([]*models.Event, error)
+	ListTodayByHostID(ctx context.Context, hostID uuid.UUID, dayStart, dayEnd time.Time) ([]*models.Event, error)
+	ListByHostIDForIDs(ctx context.Context, hostID uuid.UUID) ([]uuid.UUID, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status models.EventStatus) error
 }
 
@@ -164,6 +166,30 @@ func (r *postgresEventRepository) ListByHostIDFiltered(ctx context.Context, host
 func (r *postgresEventRepository) ListByDateRange(ctx context.Context, hostID uuid.UUID, start, end time.Time) ([]*models.Event, error) {
 	query := `SELECT ` + eventColumns + ` FROM events WHERE host_id = $1 AND time >= $2 AND time < $3 ORDER BY time ASC`
 	return r.scanEvents(ctx, query, hostID, start, end)
+}
+
+func (r *postgresEventRepository) ListTodayByHostID(ctx context.Context, hostID uuid.UUID, dayStart, dayEnd time.Time) ([]*models.Event, error) {
+	query := `SELECT ` + eventColumns + ` FROM events WHERE host_id = $1 AND time >= $2 AND time < $3 AND status = 'live' ORDER BY time ASC`
+	return r.scanEvents(ctx, query, hostID, dayStart, dayEnd)
+}
+
+func (r *postgresEventRepository) ListByHostIDForIDs(ctx context.Context, hostID uuid.UUID) ([]uuid.UUID, error) {
+	query := `SELECT id FROM events WHERE host_id = $1`
+	rows, err := r.db.QueryContext(ctx, query, hostID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func (r *postgresEventRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status models.EventStatus) error {

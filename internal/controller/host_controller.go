@@ -25,7 +25,11 @@ func (c *HostController) RegisterRoutes(r chi.Router) {
 		r.Get("/application-status", c.GetApplicationStatus)
 		r.Get("/me", c.GetMyHostProfile)
 		r.Put("/me", c.UpdateProfile)
+		r.Put("/me/social", c.ConnectSocial)
+		r.Delete("/me/social/{platform}", c.DisconnectSocial)
 		r.Get("/dashboard", c.GetDashboardOverview)
+		r.Get("/attention-items", c.GetAttentionItems)
+		r.Get("/earnings/breakdown", c.GetEarningsBreakdown)
 	})
 }
 
@@ -221,4 +225,148 @@ func (c *HostController) GetDashboardOverview(w http.ResponseWriter, r *http.Req
 	}
 
 	RespondSuccess(w, http.StatusOK, overview)
+}
+
+// ── Social Connect/Disconnect ───────────────────────────────────────────────
+
+type SocialConnectRequestBody struct {
+	UserID   uuid.UUID `json:"user_id"`
+	Platform string    `json:"platform"` // "instagram", "youtube", "twitter", "linkedin", "website"
+	URL      string    `json:"url"`
+}
+
+func (c *HostController) ConnectSocial(w http.ResponseWriter, r *http.Request) {
+	var req SocialConnectRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	// Resolve host ID from user ID
+	host, err := c.hostService.GetHostByUserID(r.Context(), req.UserID)
+	if err != nil {
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if host == nil {
+		RespondError(w, http.StatusNotFound, "Host profile not found")
+		return
+	}
+
+	svcReq := service.SocialConnectRequest{
+		Platform: req.Platform,
+		URL:      req.URL,
+	}
+
+	updated, err := c.hostService.ConnectSocial(r.Context(), host.ID, svcReq)
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	RespondSuccess(w, http.StatusOK, updated)
+}
+
+func (c *HostController) DisconnectSocial(w http.ResponseWriter, r *http.Request) {
+	platform := chi.URLParam(r, "platform")
+	if platform == "" {
+		RespondError(w, http.StatusBadRequest, "Missing platform")
+		return
+	}
+
+	userIDStr := r.URL.Query().Get("user_id")
+	if userIDStr == "" {
+		RespondError(w, http.StatusBadRequest, "Missing user_id")
+		return
+	}
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid user_id")
+		return
+	}
+
+	host, err := c.hostService.GetHostByUserID(r.Context(), userID)
+	if err != nil {
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if host == nil {
+		RespondError(w, http.StatusNotFound, "Host profile not found")
+		return
+	}
+
+	updated, err := c.hostService.DisconnectSocial(r.Context(), host.ID, platform)
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	RespondSuccess(w, http.StatusOK, updated)
+}
+
+// ── Attention Items ─────────────────────────────────────────────────────────
+
+func (c *HostController) GetAttentionItems(w http.ResponseWriter, r *http.Request) {
+	userIDStr := r.URL.Query().Get("user_id")
+	if userIDStr == "" {
+		RespondError(w, http.StatusBadRequest, "Missing user_id")
+		return
+	}
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid user_id")
+		return
+	}
+
+	// Resolve host from user ID
+	host, err := c.hostService.GetHostByUserID(r.Context(), userID)
+	if err != nil {
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if host == nil {
+		RespondError(w, http.StatusNotFound, "Host profile not found")
+		return
+	}
+
+	items, err := c.hostService.GetAttentionItems(r.Context(), host.ID)
+	if err != nil {
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	RespondSuccess(w, http.StatusOK, items)
+}
+
+// ── Earnings Breakdown ──────────────────────────────────────────────────────
+
+func (c *HostController) GetEarningsBreakdown(w http.ResponseWriter, r *http.Request) {
+	userIDStr := r.URL.Query().Get("user_id")
+	if userIDStr == "" {
+		RespondError(w, http.StatusBadRequest, "Missing user_id")
+		return
+	}
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid user_id")
+		return
+	}
+
+	host, err := c.hostService.GetHostByUserID(r.Context(), userID)
+	if err != nil {
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if host == nil {
+		RespondError(w, http.StatusNotFound, "Host profile not found")
+		return
+	}
+
+	breakdown, err := c.hostService.GetEarningsBreakdown(r.Context(), host.ID)
+	if err != nil {
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	RespondSuccess(w, http.StatusOK, breakdown)
 }
