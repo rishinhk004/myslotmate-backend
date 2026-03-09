@@ -305,6 +305,47 @@ paths:
           $ref: "#/components/responses/InternalError"
 
   # ── Hosts ───────────────────────────────────
+  /hosts:
+    get:
+      tags: [Hosts]
+      summary: List all approved hosts (public)
+      operationId: listHosts
+      responses:
+        "200":
+          description: List of approved host profiles
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_PublicHostProfileList"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /hosts/{hostID}:
+    get:
+      tags: [Hosts]
+      summary: View a host's public profile
+      operationId: getPublicHostProfile
+      parameters:
+        - name: hostID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Public host profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_PublicHostProfile"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /hosts/apply:
     post:
       tags: [Hosts]
@@ -2436,6 +2477,54 @@ components:
           type: string
           format: date-time
 
+    PublicHostProfile:
+      type: object
+      description: Public-facing host profile (no sensitive fields)
+      properties:
+        id:
+          type: string
+          format: uuid
+        first_name:
+          type: string
+        last_name:
+          type: string
+        city:
+          type: string
+        avatar_url:
+          type: string
+          nullable: true
+        tagline:
+          type: string
+          nullable: true
+        bio:
+          type: string
+          nullable: true
+        is_identity_verified:
+          type: boolean
+        is_super_host:
+          type: boolean
+        is_community_champ:
+          type: boolean
+        expertise_tags:
+          type: array
+          items:
+            type: string
+        social_instagram:
+          type: string
+          nullable: true
+        social_linkedin:
+          type: string
+          nullable: true
+        social_website:
+          type: string
+          nullable: true
+        avg_rating:
+          type: number
+          format: double
+          nullable: true
+        total_reviews:
+          type: integer
+
     Event:
       type: object
       properties:
@@ -2984,6 +3073,26 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Host"
+
+    SuccessResponse_PublicHostProfile:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/PublicHostProfile"
+
+    SuccessResponse_PublicHostProfileList:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/PublicHostProfile"
 
     SuccessResponse_HostDashboard:
       type: object

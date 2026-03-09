@@ -182,6 +182,11 @@ func main() {
 		}
 	}()
 
+	// Self-ping keep-alive: prevents Render free-tier from spinning down.
+	if cfg.RenderExternalURL != "" {
+		go keepAlive(ctx, cfg.RenderExternalURL+"/health")
+	}
+
 	// Graceful shutdown on SIGINT/SIGTERM.
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -195,5 +200,30 @@ func main() {
 		log.Printf("graceful shutdown failed: %v", err)
 	} else {
 		log.Println("server stopped cleanly")
+	}
+}
+
+// keepAlive pings the given URL every 10 minutes to prevent
+// Render free-tier instances from spinning down due to inactivity.
+func keepAlive(ctx context.Context, url string) {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	log.Printf("Keep-alive enabled: pinging %s every 10m", url)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			resp, err := client.Get(url)
+			if err != nil {
+				log.Printf("keep-alive ping failed: %v", err)
+				continue
+			}
+			resp.Body.Close()
+			log.Printf("keep-alive ping: %s", resp.Status)
+		}
 	}
 }

@@ -40,13 +40,14 @@ type RazorpayConfig struct {
 }
 
 type Config struct {
-	HTTPPort   string
-	AdminEmail string
-	Firebase   FirebaseConfig
-	Database   DatabaseConfig
-	Setu       SetuConfig
-	Razorpay   RazorpayConfig
-	S3         S3Config
+	HTTPPort          string
+	AdminEmail        string
+	RenderExternalURL string // RENDER_EXTERNAL_URL, used for self-ping keep-alive
+	Firebase          FirebaseConfig
+	Database          DatabaseConfig
+	Setu              SetuConfig
+	Razorpay          RazorpayConfig
+	S3                S3Config
 }
 
 // Load reads configuration from environment variables (optionally via .env).
@@ -55,8 +56,9 @@ func Load() (*Config, error) {
 	_ = godotenv.Load()
 
 	cfg := &Config{
-		HTTPPort:   getEnv("HTTP_PORT", "8080"),
-		AdminEmail: getEnv("ADMIN_EMAIL", ""),
+		HTTPPort:          getEnv("HTTP_PORT", "8080"),
+		AdminEmail:        getEnv("ADMIN_EMAIL", ""),
+		RenderExternalURL: getEnv("RENDER_EXTERNAL_URL", ""),
 		Firebase: FirebaseConfig{
 			CredentialsFile: getEnv("FIREBASE_CREDENTIALS_FILE", "config/firebase-service-account.json"),
 			ProjectID:       getEnv("FIREBASE_PROJECT_ID", "myslotmate-25994"),

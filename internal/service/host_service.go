@@ -25,6 +25,10 @@ type HostService interface {
 	RejectApplication(ctx context.Context, hostID uuid.UUID, reason string) (*models.Host, error)
 	ListPendingApplications(ctx context.Context) ([]*models.Host, error)
 
+	// Public
+	GetHostByID(ctx context.Context, hostID uuid.UUID) (*models.Host, error)
+	ListApprovedHosts(ctx context.Context) ([]*models.Host, error)
+
 	// Profile management
 	GetHostByUserID(ctx context.Context, userID uuid.UUID) (*models.Host, error)
 	UpdateProfile(ctx context.Context, hostID uuid.UUID, req HostProfileUpdateRequest) (*models.Host, error)
@@ -237,6 +241,24 @@ func (s *hostService) saveHostApplication(ctx context.Context, userID uuid.UUID,
 
 func (s *hostService) GetApplicationStatus(ctx context.Context, userID uuid.UUID) (*models.Host, error) {
 	return s.hostRepo.GetByUserID(ctx, userID)
+}
+
+func (s *hostService) ListApprovedHosts(ctx context.Context) ([]*models.Host, error) {
+	return s.hostRepo.ListByStatus(ctx, models.HostApplicationApproved)
+}
+
+func (s *hostService) GetHostByID(ctx context.Context, hostID uuid.UUID) (*models.Host, error) {
+	host, err := s.hostRepo.GetByID(ctx, hostID)
+	if err != nil {
+		return nil, err
+	}
+	if host == nil {
+		return nil, errors.New("host not found")
+	}
+	if host.ApplicationStatus != models.HostApplicationApproved {
+		return nil, errors.New("host not found")
+	}
+	return host, nil
 }
 
 func (s *hostService) GetHostByUserID(ctx context.Context, userID uuid.UUID) (*models.Host, error) {
