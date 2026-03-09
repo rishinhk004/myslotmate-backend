@@ -45,7 +45,7 @@ tags:
   - name: Upload
     description: Generic file upload (AWS S3)
   - name: Webhooks
-    description: Razorpay payout webhook receiver
+    description: Razorpay webhook receivers (payouts + payment collection)
   - name: Admin
     description: Admin-only host application management (requires ADMIN_EMAIL)
 
@@ -200,6 +200,93 @@ paths:
           $ref: "#/components/responses/InternalError"
 
   # ── Saved Experiences ───────────────────────
+  /users/wallet/balance:
+    get:
+      tags: [Users]
+      summary: Get wallet balance
+      operationId: getWalletBalance
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Wallet balance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_WalletBalance"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /users/wallet/topup:
+    post:
+      tags: [Users]
+      summary: Initiate wallet top-up (creates Razorpay order)
+      operationId: initiateTopUp
+      description: |
+        Creates a Razorpay order for the given amount. Returns `order_id` and `key_id`
+        that the client uses to launch the Razorpay Checkout SDK. After the user
+        completes payment, call `/users/wallet/topup/verify` with the Razorpay callback data.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TopUpRequest"
+      responses:
+        "201":
+          description: Razorpay order created — use these fields to launch checkout
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_TopUpOrder"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /users/wallet/topup/verify:
+    post:
+      tags: [Users]
+      summary: Verify top-up payment and credit wallet
+      operationId: verifyTopUp
+      description: |
+        Called by the client after Razorpay Checkout completes successfully.
+        Verifies the Razorpay signature, credits the wallet, and returns the updated balance.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyTopUpRequest"
+      responses:
+        "200":
+          description: Payment verified, wallet credited
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_WalletBalance"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Invalid Razorpay signature
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /users/saved-experiences:
     post:
       tags: [SavedExperiences]
@@ -723,6 +810,30 @@ paths:
 
   # ── Events ──────────────────────────────────
   /events/:
+    get:
+      tags: [Events]
+      summary: List all published (live) events (public)
+      operationId: listPublishedEvents
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: List of published events
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_EventList"
+        "500":
+          $ref: "#/components/responses/InternalError"
     post:
       tags: [Events]
       summary: Create a new event
@@ -994,6 +1105,26 @@ paths:
                 $ref: "#/components/schemas/SuccessResponse_Booking"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "402":
+          description: Insufficient wallet balance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Account blocked due to suspicious activity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Event capacity exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1656,6 +1787,45 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
 
   # ── Webhooks ────────────────────────────────
+  /webhooks/payment:
+    post:
+      tags: [Webhooks]
+      summary: Razorpay payment webhook receiver
+      operationId: razorpayPaymentWebhook
+      description: |
+        Called by Razorpay when a payment is captured or fails.
+        Acts as a server-side fallback to credit the wallet even if the
+        client-side verify call was missed. Signature is verified via HMAC-SHA256.
+      parameters:
+        - name: X-Razorpay-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RazorpayPaymentWebhookEvent"
+      responses:
+        "200":
+          description: Webhook processed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Message"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Invalid webhook signature
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /webhooks/payout:
     post:
       tags: [Webhooks]
@@ -1875,6 +2045,114 @@ components:
         event_id:
           type: string
           format: uuid
+
+    TopUpRequest:
+      type: object
+      required: [user_id, amount_cents]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        amount_cents:
+          type: integer
+          format: int64
+          description: Amount to add in paise (INR cents), must be positive
+          example: 50000
+        idempotency_key:
+          type: string
+          description: Optional idempotency key to prevent duplicate orders
+
+    TopUpOrderResponse:
+      type: object
+      description: Returned after creating a Razorpay order. Use these fields to launch checkout.
+      properties:
+        order_id:
+          type: string
+          description: Razorpay order ID (order_xxxxx)
+          example: order_EKm05ESALkpH5f
+        amount_cents:
+          type: integer
+          format: int64
+          description: Amount in paise
+          example: 50000
+        currency:
+          type: string
+          example: INR
+        key_id:
+          type: string
+          description: Razorpay public key for client-side checkout SDK
+          example: rzp_live_xxxxxxx
+        payment_id:
+          type: string
+          format: uuid
+          description: Internal payment UUID for tracking
+
+    VerifyTopUpRequest:
+      type: object
+      required: [user_id, razorpay_order_id, razorpay_payment_id, razorpay_signature]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        razorpay_order_id:
+          type: string
+          description: From Razorpay checkout callback
+          example: order_EKm05ESALkpH5f
+        razorpay_payment_id:
+          type: string
+          description: From Razorpay checkout callback
+          example: pay_EKm05ESALkpH5f
+        razorpay_signature:
+          type: string
+          description: HMAC-SHA256 signature from Razorpay checkout callback
+
+    RazorpayPaymentWebhookEvent:
+      type: object
+      description: Razorpay payment webhook payload (payment.captured / payment.failed)
+      properties:
+        entity:
+          type: string
+          example: event
+        account_id:
+          type: string
+        event:
+          type: string
+          example: payment.captured
+        payload:
+          type: object
+          properties:
+            payment:
+              type: object
+              properties:
+                entity:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                      example: pay_EKm05ESALkpH5f
+                    order_id:
+                      type: string
+                      example: order_EKm05ESALkpH5f
+                    amount:
+                      type: integer
+                      format: int64
+                    status:
+                      type: string
+                      enum: [captured, failed]
+        created_at:
+          type: integer
+          format: int64
+
+    WalletBalance:
+      type: object
+      properties:
+        account_id:
+          type: string
+          format: uuid
+        balance_cents:
+          type: integer
+          format: int64
+          example: 150000
 
     HostApplicationRequest:
       type: object
@@ -3093,6 +3371,24 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PublicHostProfile"
+
+    SuccessResponse_TopUpOrder:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/TopUpOrderResponse"
+
+    SuccessResponse_WalletBalance:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/WalletBalance"
 
     SuccessResponse_HostDashboard:
       type: object

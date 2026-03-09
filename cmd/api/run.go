@@ -19,6 +19,7 @@ import (
 	cfgfirebase "myslotmate-backend/internal/firebase"
 	"myslotmate-backend/internal/lib/event"
 	"myslotmate-backend/internal/lib/identity"
+	"myslotmate-backend/internal/lib/payment"
 	"myslotmate-backend/internal/lib/payout"
 	"myslotmate-backend/internal/lib/realtime"
 	"myslotmate-backend/internal/lib/storage"
@@ -113,14 +114,6 @@ func main() {
 	})
 	log.Println("Using Setu Aadhar Provider")
 
-	userService := service.NewUserService(userRepo, hostRepo, savedExpRepo, workerPool, dispatcher, aadharProvider)
-	hostService := service.NewHostService(hostRepo, userRepo, eventRepo, bookingRepo, reviewRepo, payoutRepo, accountRepo, dispatcher)
-	eventService := service.NewEventService(eventRepo, bookingRepo, dispatcher)
-	bookingService := service.NewBookingService(bookingRepo, eventRepo, accountRepo, paymentRepo, payoutRepo, hostRepo, dispatcher)
-	reviewService := service.NewReviewService(reviewRepo, eventRepo, dispatcher)
-	inboxService := service.NewInboxService(inboxRepo, eventRepo, socketService)
-	supportService := service.NewSupportService(supportRepo)
-
 	// Strategy Pattern: Payout Provider (Razorpay)
 	rzpKeyID := cfg.Razorpay.KeyID
 	rzpKeySecret := cfg.Razorpay.KeySecret
@@ -136,6 +129,26 @@ func main() {
 		WebhookSecret: cfg.Razorpay.WebhookSecret,
 	})
 	log.Println("Using Razorpay Payout Provider")
+
+	// Strategy Pattern: Payment Collection Provider (Razorpay Standard)
+	paymentWebhookSecret := cfg.Razorpay.PaymentWebhookSecret
+	if paymentWebhookSecret == "" {
+		paymentWebhookSecret = cfg.Razorpay.WebhookSecret // fallback to shared secret
+	}
+	paymentProvider := payment.NewRazorpayProvider(payment.RazorpayConfig{
+		KeyID:         rzpKeyID,
+		KeySecret:     rzpKeySecret,
+		WebhookSecret: paymentWebhookSecret,
+	})
+	log.Println("Using Razorpay Payment Collection Provider")
+
+	userService := service.NewUserService(userRepo, hostRepo, savedExpRepo, accountRepo, paymentRepo, workerPool, dispatcher, aadharProvider, paymentProvider)
+	hostService := service.NewHostService(hostRepo, userRepo, eventRepo, bookingRepo, reviewRepo, payoutRepo, accountRepo, dispatcher)
+	eventService := service.NewEventService(eventRepo, bookingRepo, dispatcher)
+	bookingService := service.NewBookingService(bookingRepo, eventRepo, accountRepo, paymentRepo, payoutRepo, hostRepo, dispatcher)
+	reviewService := service.NewReviewService(reviewRepo, eventRepo, dispatcher)
+	inboxService := service.NewInboxService(inboxRepo, eventRepo, socketService)
+	supportService := service.NewSupportService(supportRepo)
 	payoutService := service.NewPayoutService(payoutRepo, accountRepo, paymentRepo, hostRepo, payoutProvider, dispatcher)
 
 	userController := controller.NewUserController(userService)
@@ -145,7 +158,7 @@ func main() {
 	reviewController := controller.NewReviewController(reviewService)
 	inboxController := controller.NewInboxController(inboxService)
 	payoutController := controller.NewPayoutController(payoutService)
-	webhookController := controller.NewWebhookController(payoutService, payoutProvider)
+	webhookController := controller.NewWebhookController(payoutService, userService, payoutProvider, paymentProvider)
 	supportController := controller.NewSupportController(supportService, uploadService)
 	uploadController := controller.NewUploadController(uploadService)
 	adminController := controller.NewAdminController(hostService, fbApp.Auth, cfg.AdminEmail)

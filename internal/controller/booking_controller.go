@@ -49,7 +49,18 @@ func (c *BookingController) CreateBooking(w http.ResponseWriter, r *http.Request
 
 	booking, err := c.bookingService.CreateBooking(r.Context(), req.UserID, svcReq)
 	if err != nil {
-		RespondError(w, http.StatusInternalServerError, err.Error())
+		switch err.Error() {
+		case "insufficient wallet balance; please top up first":
+			RespondError(w, http.StatusPaymentRequired, err.Error())
+		case "event not found", "user account not found":
+			RespondError(w, http.StatusNotFound, err.Error())
+		case "event capacity exceeded":
+			RespondError(w, http.StatusConflict, err.Error())
+		case "your account is blocked due to suspicious activity":
+			RespondError(w, http.StatusForbidden, err.Error())
+		default:
+			RespondError(w, http.StatusInternalServerError, err.Error())
+		}
 		return
 	}
 

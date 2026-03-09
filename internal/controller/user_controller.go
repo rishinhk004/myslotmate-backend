@@ -30,6 +30,9 @@ func (c *UserController) RegisterRoutes(r chi.Router) {
 	r.Route("/users", func(r chi.Router) {
 		r.Get("/me", c.GetProfile)
 		r.Put("/me", c.UpdateProfile)
+		r.Get("/wallet/balance", c.GetWalletBalance)
+		r.Post("/wallet/topup", c.InitiateTopUp)
+		r.Post("/wallet/topup/verify", c.VerifyTopUp)
 		r.Post("/saved-experiences", c.SaveExperience)
 		r.Delete("/saved-experiences/{eventID}", c.UnsaveExperience)
 		r.Get("/saved-experiences", c.GetSavedExperiences)
@@ -272,4 +275,107 @@ func (c *UserController) IsExperienceSaved(w http.ResponseWriter, r *http.Reques
 	}
 
 	RespondSuccess(w, http.StatusOK, map[string]bool{"saved": exists})
+}
+
+type TopUpRequestBody struct {
+	UserID         uuid.UUID `json:"user_id"`
+	AmountCents    int64     `json:"amount_cents"`
+	IdempotencyKey string    `json:"idempotency_key,omitempty"`
+}
+
+type VerifyTopUpRequestBody struct {
+	UserID            uuid.UUID `json:"user_id"`
+	RazorpayOrderID   string    `json:"razorpay_order_id"`
+	RazorpayPaymentID string    `json:"razorpay_payment_id"`
+	RazorpaySignature string    `json:"razorpay_signature"`
+}
+
+func (c *UserController) GetWalletBalance(w http.ResponseWriter, r *http.Request) {
+	userIDStr := r.URL.Query().Get("user_id")
+	if userIDStr == "" {
+		RespondError(w, http.StatusBadRequest, "Missing user_id")
+		return
+	}
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid user_id")
+		return
+	}
+
+	balance, err := c.userService.GetWalletBalance(r.Context(), userID)
+	if err != nil {
+		if err.Error() == "wallet not found" {
+			RespondError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	RespondSuccess(w, http.StatusOK, balance)
+}
+
+// InitiateTopUp creates a Razorpay order and returns checkout details to the client.
+func (c *UserController) InitiateTopUp(w http.ResponseWriter, r *http.Request) {
+	var req TopUpRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+	if req.AmountCents <= 0 {
+		RespondError(w, http.StatusBadRequest, "amount_cents must be positive")
+		return
+	}
+
+	svcReq := service.TopUpRequest{
+		AmountCents:    req.AmountCents,
+		IdempotencyKey: req.IdempotencyKey,
+	}
+
+	result, err := c.userService.InitiateTopUp(r.Context(), req.UserID, svcReq)
+	if err != nil {
+		if err.Error() == "wallet not found" {
+			RespondError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	RespondSuccess(w, http.StatusCreated, result)
+}
+
+// VerifyTopUp verifies the Razorpay checkout callback and credits the wallet.
+func (c *UserController) VerifyTopUp(w http.ResponseWriter, r *http.Request) {
+	var req VerifyTopUpRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+	if req.RazorpayOrderID == "" || req.RazorpayPaymentID == "" || req.RazorpaySignature == "" {
+		RespondError(w, http.StatusBadRequest, "Missing razorpay_order_id, razorpay_payment_id, or razorpay_signature")
+		return
+	}
+
+	svcReq := service.VerifyTopUpRequest{
+		RazorpayOrderID:   req.RazorpayOrderID,
+		RazorpayPaymentID: req.RazorpayPaymentID,
+		RazorpaySignature: req.RazorpaySignature,
+	}
+
+	result, err := c.userService.VerifyTopUp(r.Context(), req.UserID, svcReq)
+	if err != nil {
+		if err.Error() == "invalid payment signature" {
+			RespondError(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		if err.Error() == "payment record not found for this order" {
+			RespondError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	RespondSuccess(w, http.StatusOK, result)
 }

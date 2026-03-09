@@ -21,6 +21,7 @@ type EventRepository interface {
 	ListByDateRange(ctx context.Context, hostID uuid.UUID, start, end time.Time) ([]*models.Event, error)
 	ListTodayByHostID(ctx context.Context, hostID uuid.UUID, dayStart, dayEnd time.Time) ([]*models.Event, error)
 	ListByHostIDForIDs(ctx context.Context, hostID uuid.UUID) ([]uuid.UUID, error)
+	ListPublished(ctx context.Context, limit, offset int) ([]*models.Event, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status models.EventStatus) error
 }
 
@@ -204,6 +205,11 @@ func (r *postgresEventRepository) UpdateStatus(ctx context.Context, id uuid.UUID
 	}
 	_, err := r.db.ExecContext(ctx, query, status, id)
 	return err
+}
+
+func (r *postgresEventRepository) ListPublished(ctx context.Context, limit, offset int) ([]*models.Event, error) {
+	query := `SELECT ` + eventColumns + ` FROM events WHERE status = 'live' ORDER BY time ASC LIMIT $1 OFFSET $2`
+	return r.scanEvents(ctx, query, limit, offset)
 }
 
 func (r *postgresEventRepository) scanEvents(ctx context.Context, query string, args ...interface{}) ([]*models.Event, error) {

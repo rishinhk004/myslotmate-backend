@@ -25,6 +25,7 @@ type EventService interface {
 	PauseEvent(ctx context.Context, eventID uuid.UUID, hostID uuid.UUID) (*models.Event, error)
 	ResumeEvent(ctx context.Context, eventID uuid.UUID, hostID uuid.UUID) (*models.Event, error)
 	GetEventAttendees(ctx context.Context, eventID uuid.UUID) ([]*models.Booking, error)
+	ListPublishedEvents(ctx context.Context, limit, offset int) ([]*models.Event, error)
 }
 
 type EventCreateRequest struct {
@@ -304,4 +305,8 @@ func (s *eventService) ResumeEvent(ctx context.Context, eventID uuid.UUID, hostI
 
 func (s *eventService) GetEventAttendees(ctx context.Context, eventID uuid.UUID) ([]*models.Booking, error) {
 	return s.bookingRepo.ListByEventID(ctx, eventID)
+}
+
+func (s *eventService) ListPublishedEvents(ctx context.Context, limit, offset int) ([]*models.Event, error) {
+	return s.eventRepo.ListPublished(ctx, limit, offset)
 }

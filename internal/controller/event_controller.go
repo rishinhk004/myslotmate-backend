@@ -23,6 +23,7 @@ func NewEventController(s service.EventService) *EventController {
 
 func (c *EventController) RegisterRoutes(r chi.Router) {
 	r.Route("/events", func(r chi.Router) {
+		r.Get("/", c.ListPublishedEvents)
 		r.Post("/", c.CreateEvent)
 		r.Put("/{eventID}", c.UpdateEvent)
 		r.Get("/{eventID}", c.GetEvent)
@@ -90,6 +91,29 @@ type EventUpdateRequestBody struct {
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────────
+
+func (c *EventController) ListPublishedEvents(w http.ResponseWriter, r *http.Request) {
+	limit := 20
+	offset := 0
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 {
+			limit = v
+		}
+	}
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if v, err := strconv.Atoi(o); err == nil && v >= 0 {
+			offset = v
+		}
+	}
+
+	events, err := c.eventService.ListPublishedEvents(r.Context(), limit, offset)
+	if err != nil {
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	RespondSuccess(w, http.StatusOK, events)
+}
 
 func (c *EventController) CreateEvent(w http.ResponseWriter, r *http.Request) {
 	var req EventCreateRequestBody

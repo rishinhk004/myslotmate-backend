@@ -8,6 +8,7 @@ import (
 
 	"myslotmate-backend/internal/lib/event"
 	"myslotmate-backend/internal/lib/identity"
+	"myslotmate-backend/internal/lib/payment"
 	"myslotmate-backend/internal/lib/worker"
 	"myslotmate-backend/internal/models"
 	"myslotmate-backend/internal/repository"
@@ -26,6 +27,10 @@ type UserService interface {
 	UnsaveExperience(ctx context.Context, userID, eventID uuid.UUID) error
 	GetSavedExperiences(ctx context.Context, userID uuid.UUID) ([]*models.SavedExperience, error)
 	IsExperienceSaved(ctx context.Context, userID, eventID uuid.UUID) (bool, error)
+	GetWalletBalance(ctx context.Context, userID uuid.UUID) (*WalletBalanceResponse, error)
+	InitiateTopUp(ctx context.Context, userID uuid.UUID, req TopUpRequest) (*TopUpOrderResponse, error)
+	VerifyTopUp(ctx context.Context, userID uuid.UUID, req VerifyTopUpRequest) (*WalletBalanceResponse, error)
+	CreditWalletFromWebhook(ctx context.Context, orderID string, razorpayPaymentID string) error
 }
 
 type SignUpRequest struct {
@@ -41,25 +46,70 @@ type UserProfileUpdateRequest struct {
 	City      *string `json:"city,omitempty"`
 }
 
+// WalletBalanceResponse is returned for balance queries and top-ups.
+type WalletBalanceResponse struct {
+	AccountID    uuid.UUID `json:"account_id"`
+	BalanceCents int64     `json:"balance_cents"`
+}
+
+// TopUpRequest is the input for wallet top-up (step 1: create order).
+type TopUpRequest struct {
+	AmountCents    int64  `json:"amount_cents"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+}
+
+// TopUpOrderResponse is returned after creating a Razorpay order. The client
+// uses these fields to launch the Razorpay checkout SDK.
+type TopUpOrderResponse struct {
+	OrderID     string `json:"order_id"`     // Razorpay order_xxxxx
+	AmountCents int64  `json:"amount_cents"` // in paise
+	Currency    string `json:"currency"`     // "INR"
+	KeyID       string `json:"key_id"`       // Razorpay public key for checkout SDK
+	PaymentID   string `json:"payment_id"`   // our internal payment UUID
+}
+
+// VerifyTopUpRequest is sent by the client after Razorpay checkout completes.
+type VerifyTopUpRequest struct {
+	RazorpayOrderID   string `json:"razorpay_order_id"`
+	RazorpayPaymentID string `json:"razorpay_payment_id"`
+	RazorpaySignature string `json:"razorpay_signature"`
+}
+
 // userService implements UserService
 type userService struct {
-	repo           repository.UserRepository
-	hostRepo       repository.HostRepository
-	savedExpRepo   repository.SavedExperienceRepository
-	workerPool     *worker.WorkerPool
-	dispatcher     *event.Dispatcher
-	aadharProvider identity.AadharProvider
+	repo            repository.UserRepository
+	hostRepo        repository.HostRepository
+	savedExpRepo    repository.SavedExperienceRepository
+	accountRepo     repository.AccountRepository
+	paymentRepo     repository.PaymentRepository
+	workerPool      *worker.WorkerPool
+	dispatcher      *event.Dispatcher
+	aadharProvider  identity.AadharProvider
+	paymentProvider payment.Provider
 }
 
 // NewUserService Factory for UserService
-func NewUserService(repo repository.UserRepository, hostRepo repository.HostRepository, savedExpRepo repository.SavedExperienceRepository, wp *worker.WorkerPool, dispatcher *event.Dispatcher, ap identity.AadharProvider) UserService {
+func NewUserService(
+	repo repository.UserRepository,
+	hostRepo repository.HostRepository,
+	savedExpRepo repository.SavedExperienceRepository,
+	ar repository.AccountRepository,
+	pmr repository.PaymentRepository,
+	wp *worker.WorkerPool,
+	dispatcher *event.Dispatcher,
+	ap identity.AadharProvider,
+	pp payment.Provider,
+) UserService {
 	return &userService{
-		repo:           repo,
-		hostRepo:       hostRepo,
-		savedExpRepo:   savedExpRepo,
-		workerPool:     wp,
-		dispatcher:     dispatcher,
-		aadharProvider: ap,
+		repo:            repo,
+		hostRepo:        hostRepo,
+		savedExpRepo:    savedExpRepo,
+		accountRepo:     ar,
+		paymentRepo:     pmr,
+		workerPool:      wp,
+		dispatcher:      dispatcher,
+		aadharProvider:  ap,
+		paymentProvider: pp,
 	}
 }
 
@@ -205,4 +255,177 @@ func (s *userService) GetSavedExperiences(ctx context.Context, userID uuid.UUID)
 
 func (s *userService) IsExperienceSaved(ctx context.Context, userID, eventID uuid.UUID) (bool, error) {
 	return s.savedExpRepo.Exists(ctx, userID, eventID)
+}
+
+func (s *userService) GetWalletBalance(ctx context.Context, userID uuid.UUID) (*WalletBalanceResponse, error) {
+	account, err := s.accountRepo.GetByOwner(ctx, models.AccountOwnerUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	if account == nil {
+		return nil, errors.New("wallet not found")
+	}
+	return &WalletBalanceResponse{
+		AccountID:    account.ID,
+		BalanceCents: account.BalanceCents,
+	}, nil
+}
+
+func (s *userService) InitiateTopUp(ctx context.Context, userID uuid.UUID, req TopUpRequest) (*TopUpOrderResponse, error) {
+	if req.AmountCents <= 0 {
+		return nil, errors.New("amount must be positive")
+	}
+
+	account, err := s.accountRepo.GetByOwner(ctx, models.AccountOwnerUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	if account == nil {
+		return nil, errors.New("wallet not found")
+	}
+
+	// Idempotency: if this key was already used, return the existing order info.
+	if req.IdempotencyKey != "" {
+		existing, err := s.paymentRepo.GetByIdempotencyKey(ctx, req.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil && existing.GatewayOrderID != nil {
+			return &TopUpOrderResponse{
+				OrderID:     *existing.GatewayOrderID,
+				AmountCents: existing.AmountCents,
+				Currency:    "INR",
+				KeyID:       s.paymentProvider.GetKeyID(),
+				PaymentID:   existing.ID.String(),
+			}, nil
+		}
+	}
+
+	// Generate a unique idempotency key if none provided.
+	idempotencyKey := req.IdempotencyKey
+	if idempotencyKey == "" {
+		idempotencyKey = fmt.Sprintf("topup_%s_%d", userID, time.Now().UnixNano())
+	}
+	paymentID := uuid.New()
+	displayRef := fmt.Sprintf("TU-%05d", time.Now().UnixMilli()%100000)
+
+	// 1. Create Razorpay order.
+	orderResp, err := s.paymentProvider.CreateOrder(ctx, payment.OrderRequest{
+		AmountCents: req.AmountCents,
+		Currency:    "INR",
+		ReceiptID:   paymentID.String(),
+		Notes: map[string]string{
+			"user_id":    userID.String(),
+			"payment_id": paymentID.String(),
+			"type":       "topup",
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create razorpay order: %w", err)
+	}
+
+	// 2. Store a pending payment record so we can reconcile later.
+	topupPayment := &models.Payment{
+		ID:               paymentID,
+		IdempotencyKey:   idempotencyKey,
+		AccountID:        account.ID,
+		Type:             models.PaymentTypeTopup,
+		AmountCents:      req.AmountCents,
+		Status:           models.PaymentStatusPending,
+		GatewayOrderID:   &orderResp.OrderID,
+		DisplayReference: &displayRef,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+	}
+	if err := s.paymentRepo.Create(ctx, topupPayment); err != nil {
+		return nil, fmt.Errorf("failed to record pending payment: %w", err)
+	}
+
+	return &TopUpOrderResponse{
+		OrderID:     orderResp.OrderID,
+		AmountCents: orderResp.AmountCents,
+		Currency:    orderResp.Currency,
+		KeyID:       s.paymentProvider.GetKeyID(),
+		PaymentID:   paymentID.String(),
+	}, nil
+}
+
+// VerifyTopUp is called by the client after completing Razorpay checkout.
+// It verifies the signature, credits the wallet, and marks the payment as completed.
+func (s *userService) VerifyTopUp(ctx context.Context, userID uuid.UUID, req VerifyTopUpRequest) (*WalletBalanceResponse, error) {
+	// 1. Verify Razorpay signature.
+	if !s.paymentProvider.VerifyPaymentSignature(payment.VerifyRequest{
+		OrderID:   req.RazorpayOrderID,
+		PaymentID: req.RazorpayPaymentID,
+		Signature: req.RazorpaySignature,
+	}) {
+		return nil, errors.New("invalid payment signature")
+	}
+
+	// 2. Look up the pending payment by gateway order ID.
+	pmtRecord, err := s.paymentRepo.GetByGatewayOrderID(ctx, req.RazorpayOrderID)
+	if err != nil {
+		return nil, err
+	}
+	if pmtRecord == nil {
+		return nil, errors.New("payment record not found for this order")
+	}
+
+	// Idempotency: if already completed, just return the balance.
+	if pmtRecord.Status == models.PaymentStatusCompleted {
+		balance, err := s.accountRepo.GetBalance(ctx, pmtRecord.AccountID)
+		if err != nil {
+			return nil, err
+		}
+		return &WalletBalanceResponse{AccountID: pmtRecord.AccountID, BalanceCents: balance}, nil
+	}
+
+	// 3. Credit the wallet.
+	if err := s.accountRepo.Credit(ctx, pmtRecord.AccountID, pmtRecord.AmountCents); err != nil {
+		return nil, fmt.Errorf("failed to credit wallet: %w", err)
+	}
+
+	// 4. Mark payment as completed and store the Razorpay payment ID.
+	gatewayPaymentID := req.RazorpayPaymentID
+	pmtRecord.Status = models.PaymentStatusCompleted
+	pmtRecord.GatewayPaymentID = &gatewayPaymentID
+	pmtRecord.UpdatedAt = time.Now()
+	_ = s.paymentRepo.Update(ctx, pmtRecord)
+
+	// 5. Return updated balance.
+	balance, err := s.accountRepo.GetBalance(ctx, pmtRecord.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	return &WalletBalanceResponse{AccountID: pmtRecord.AccountID, BalanceCents: balance}, nil
+}
+
+// CreditWalletFromWebhook is the server-side fallback called by the webhook controller
+// when Razorpay sends a payment.captured event. It ensures the wallet is credited even
+// if the client-side verify call was missed.
+func (s *userService) CreditWalletFromWebhook(ctx context.Context, orderID string, razorpayPaymentID string) error {
+	pmtRecord, err := s.paymentRepo.GetByGatewayOrderID(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	if pmtRecord == nil {
+		return errors.New("payment record not found for order")
+	}
+
+	// Already credited — nothing to do.
+	if pmtRecord.Status == models.PaymentStatusCompleted {
+		return nil
+	}
+
+	// Credit wallet.
+	if err := s.accountRepo.Credit(ctx, pmtRecord.AccountID, pmtRecord.AmountCents); err != nil {
+		return fmt.Errorf("failed to credit wallet via webhook: %w", err)
+	}
+
+	pmtRecord.Status = models.PaymentStatusCompleted
+	pmtRecord.GatewayPaymentID = &razorpayPaymentID
+	pmtRecord.UpdatedAt = time.Now()
+	_ = s.paymentRepo.Update(ctx, pmtRecord)
+
+	return nil
 }

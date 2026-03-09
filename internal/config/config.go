@@ -31,12 +31,13 @@ type SetuConfig struct {
 	ProductInstanceID string
 }
 
-// RazorpayConfig holds RazorpayX Payouts API credentials.
+// RazorpayConfig holds RazorpayX Payouts API and Razorpay Standard Payment credentials.
 type RazorpayConfig struct {
-	KeyID         string
-	KeySecret     string
-	AccountNumber string
-	WebhookSecret string
+	KeyID                string
+	KeySecret            string
+	AccountNumber        string
+	WebhookSecret        string // payout webhook secret
+	PaymentWebhookSecret string // payment collection webhook secret
 }
 
 type Config struct {
@@ -79,10 +80,11 @@ func Load() (*Config, error) {
 			ProductInstanceID: getEnv("SETU_PRODUCT_INSTANCE_ID", ""),
 		},
 		Razorpay: RazorpayConfig{
-			KeyID:         getEnv("RAZORPAY_KEY_ID", ""),
-			KeySecret:     getEnv("RAZORPAY_KEY_SECRET", ""),
-			AccountNumber: getEnv("RAZORPAY_ACCOUNT_NUMBER", ""),
-			WebhookSecret: getEnv("RAZORPAY_WEBHOOK_SECRET", ""),
+			KeyID:                getEnv("RAZORPAY_KEY_ID", ""),
+			KeySecret:            getEnv("RAZORPAY_KEY_SECRET", ""),
+			AccountNumber:        getEnv("RAZORPAY_ACCOUNT_NUMBER", ""),
+			WebhookSecret:        getEnv("RAZORPAY_WEBHOOK_SECRET", ""),
+			PaymentWebhookSecret: getEnv("RAZORPAY_PAYMENT_WEBHOOK_SECRET", ""),
 		},
 	}
 

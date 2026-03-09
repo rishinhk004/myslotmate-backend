@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 
+	"myslotmate-backend/internal/lib/payment"
 	"myslotmate-backend/internal/lib/payout"
 	"myslotmate-backend/internal/service"
 
@@ -15,20 +16,25 @@ import (
 
 // WebhookController handles callbacks from external payment providers.
 type WebhookController struct {
-	payoutService service.PayoutService
-	provider      payout.Provider
+	payoutService   service.PayoutService
+	userService     service.UserService
+	payoutProvider  payout.Provider
+	paymentProvider payment.Provider
 }
 
-func NewWebhookController(ps service.PayoutService, provider payout.Provider) *WebhookController {
+func NewWebhookController(ps service.PayoutService, us service.UserService, payoutProv payout.Provider, paymentProv payment.Provider) *WebhookController {
 	return &WebhookController{
-		payoutService: ps,
-		provider:      provider,
+		payoutService:   ps,
+		userService:     us,
+		payoutProvider:  payoutProv,
+		paymentProvider: paymentProv,
 	}
 }
 
 func (c *WebhookController) RegisterRoutes(r chi.Router) {
 	r.Route("/webhooks", func(r chi.Router) {
 		r.Post("/payout", c.HandlePayoutWebhook)
+		r.Post("/payment", c.HandlePaymentWebhook)
 	})
 }
 
@@ -102,7 +108,7 @@ func (c *WebhookController) HandlePayoutWebhook(w http.ResponseWriter, r *http.R
 
 	// 2. Verify Razorpay webhook signature (X-Razorpay-Signature header)
 	signature := r.Header.Get("X-Razorpay-Signature")
-	if !c.provider.ValidateWebhookSignature(body, signature) {
+	if !c.payoutProvider.ValidateWebhookSignature(body, signature) {
 		RespondError(w, http.StatusUnauthorized, "Invalid webhook signature")
 		return
 	}
@@ -152,4 +158,67 @@ func (c *WebhookController) HandlePayoutWebhook(w http.ResponseWriter, r *http.R
 	}
 
 	RespondSuccess(w, http.StatusOK, map[string]string{"message": "webhook processed"})
+}
+
+// ── Payment (collection) webhook ────────────────────────────────────────────
+
+// RazorpayPaymentWebhookEvent is the top-level payload for payment.captured / payment.failed events.
+type RazorpayPaymentWebhookEvent struct {
+	Entity    string `json:"entity"` // "event"
+	AccountID string `json:"account_id"`
+	Event     string `json:"event"` // "payment.captured", "payment.failed"
+	Payload   struct {
+		Payment struct {
+			Entity struct {
+				ID      string `json:"id"`       // pay_xxxxx
+				OrderID string `json:"order_id"` // order_xxxxx
+				Amount  int64  `json:"amount"`
+				Status  string `json:"status"` // "captured", "failed"
+			} `json:"entity"`
+		} `json:"payment"`
+	} `json:"payload"`
+	CreatedAt int64 `json:"created_at"`
+}
+
+func (c *WebhookController) HandlePaymentWebhook(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, "Failed to read request body")
+		return
+	}
+	defer r.Body.Close()
+
+	signature := r.Header.Get("X-Razorpay-Signature")
+	if !c.paymentProvider.ValidateWebhookSignature(body, signature) {
+		RespondError(w, http.StatusUnauthorized, "Invalid webhook signature")
+		return
+	}
+
+	var event RazorpayPaymentWebhookEvent
+	if err := json.Unmarshal(body, &event); err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid webhook payload")
+		return
+	}
+
+	// We only act on payment.captured — the money is with us.
+	if event.Event != "payment.captured" {
+		log.Printf("[webhook/payment] ignoring event: %s", event.Event)
+		RespondSuccess(w, http.StatusOK, map[string]string{"message": "event ignored"})
+		return
+	}
+
+	orderID := event.Payload.Payment.Entity.OrderID
+	paymentID := event.Payload.Payment.Entity.ID
+	if orderID == "" || paymentID == "" {
+		RespondError(w, http.StatusBadRequest, "Missing order_id or payment id in webhook payload")
+		return
+	}
+
+	if err := c.userService.CreditWalletFromWebhook(r.Context(), orderID, paymentID); err != nil {
+		log.Printf("[webhook/payment] error crediting wallet for order %s: %v", orderID, err)
+		RespondError(w, http.StatusInternalServerError, "Failed to process payment webhook")
+		return
+	}
+
+	RespondSuccess(w, http.StatusOK, map[string]string{"message": "payment webhook processed"})
 }
