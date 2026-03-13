@@ -55,6 +55,7 @@ func NewRouter(
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	r.Use(corsMiddlewareAllowAll())
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -125,4 +126,40 @@ func NewRouter(
 	}
 
 	return r
+}
+
+// corsMiddlewareAllowAll enables CORS for all origins.
+func corsMiddlewareAllowAll() func(http.Handler) http.Handler {
+	const allowedMethods = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+	const defaultAllowedHeaders = "Accept,Authorization,Content-Type,Origin,X-Requested-With"
+	const exposedHeaders = "Content-Length,Content-Type"
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+
+			if origin != "" {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+
+				w.Header().Set("Access-Control-Allow-Methods", allowedMethods)
+
+				requestHeaders := r.Header.Get("Access-Control-Request-Headers")
+				if requestHeaders != "" {
+					w.Header().Set("Access-Control-Allow-Headers", requestHeaders)
+				} else {
+					w.Header().Set("Access-Control-Allow-Headers", defaultAllowedHeaders)
+				}
+
+				w.Header().Set("Access-Control-Expose-Headers", exposedHeaders)
+				w.Header().Set("Access-Control-Max-Age", "600")
+			}
+
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
 }
