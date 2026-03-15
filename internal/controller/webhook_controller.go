@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 
 	"myslotmate-backend/internal/lib/payment"
 	"myslotmate-backend/internal/lib/payout"
@@ -38,63 +39,66 @@ func (c *WebhookController) RegisterRoutes(r chi.Router) {
 	})
 }
 
-// ── Razorpay webhook structures ─────────────────────────────────────────────
+// ── Cashfree payout webhook structures ─────────────────────────────────────
 
-// RazorpayWebhookEvent is the top-level webhook payload from Razorpay.
-// Docs: https://razorpay.com/docs/webhooks/payloads/payouts
-type RazorpayWebhookEvent struct {
-	Entity    string                 `json:"entity"`     // "event"
-	AccountID string                 `json:"account_id"` // Razorpay account ID
-	Event     string                 `json:"event"`      // e.g. "payout.processed", "payout.failed", "payout.reversed"
-	Contains  []string               `json:"contains"`   // ["payout"]
-	Payload   RazorpayWebhookPayload `json:"payload"`
-	CreatedAt int64                  `json:"created_at"`
+type CashfreeTransferEntity struct {
+	TransferID   string `json:"transfer_id"`
+	ReferenceID  string `json:"reference_id"`
+	Status       string `json:"status"`
+	Message      string `json:"message"`
+	Reason       string `json:"reason"`
+	ErrorMessage string `json:"error_message"`
 }
 
-type RazorpayWebhookPayload struct {
-	Payout struct {
-		Entity RazorpayPayoutEntity `json:"entity"`
-	} `json:"payout"`
+// CashfreePayoutWebhookEvent handles common Cashfree webhook payload shapes.
+type CashfreePayoutWebhookEvent struct {
+	Event        string                  `json:"event"`
+	Type         string                  `json:"type"`
+	TransferID   string                  `json:"transfer_id"`
+	ReferenceID  string                  `json:"reference_id"`
+	Status       string                  `json:"status"`
+	Message      string                  `json:"message"`
+	Reason       string                  `json:"reason"`
+	ErrorMessage string                  `json:"error_message"`
+	Data         *CashfreeTransferEntity `json:"data,omitempty"`
+	Transfer     *CashfreeTransferEntity `json:"transfer,omitempty"`
 }
 
-type RazorpayPayoutEntity struct {
-	ID            string `json:"id"`     // pout_xxxxx
-	Entity        string `json:"entity"` // "payout"
-	FundAccountID string `json:"fund_account_id"`
-	Amount        int64  `json:"amount"`
-	Currency      string `json:"currency"`
-	Status        string `json:"status"` // processed, reversed, failed, cancelled
-	Mode          string `json:"mode"`
-	Purpose       string `json:"purpose"`
-	ReferenceID   string `json:"reference_id"` // our idempotency key / payment ID
-	Narration     string `json:"narration"`
-	FailureReason string `json:"failure_reason"`
-	StatusDetails *struct {
-		Description string `json:"description"`
-		Source      string `json:"source"`
-		Reason      string `json:"reason"`
-	} `json:"status_details,omitempty"`
-	Error *struct {
-		Description string `json:"description"`
-		Source      string `json:"source"`
-		Reason      string `json:"reason"`
-	} `json:"error,omitempty"`
-}
-
-// mapRazorpayWebhookEvent converts a Razorpay event name to our internal status.
-func mapRazorpayWebhookEvent(event string) string {
-	switch event {
-	case "payout.processed":
+// mapCashfreeWebhookStatus converts Cashfree event/status to internal status.
+func mapCashfreeWebhookStatus(eventName string, status string) string {
+	switch strings.ToUpper(strings.TrimSpace(eventName)) {
+	case "TRANSFER_SUCCESS", "PAYOUT_SUCCESS", "PAYOUT_PROCESSED":
 		return "completed"
-	case "payout.failed":
+	case "TRANSFER_FAILED", "PAYOUT_FAILED":
 		return "failed"
-	case "payout.reversed":
+	case "TRANSFER_REVERSED", "PAYOUT_REVERSED", "PAYOUT_RETURNED":
 		return "reversed"
-	case "payout.queued", "payout.initiated":
+	case "TRANSFER_PENDING", "TRANSFER_PROCESSING", "PAYOUT_PENDING", "PAYOUT_PROCESSING":
+		return "processing"
+	}
+
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "SUCCESS", "COMPLETED", "PROCESSED":
+		return "completed"
+	case "FAILED", "REJECTED", "CANCELLED", "CANCELED":
+		return "failed"
+	case "REVERSED", "RETURNED":
+		return "reversed"
+	case "PENDING", "PROCESSING", "QUEUED", "INITIATED":
 		return "processing"
 	default:
 		return ""
 	}
+}
+
+func pickFirst(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func (c *WebhookController) HandlePayoutWebhook(w http.ResponseWriter, r *http.Request) {
@@ -106,49 +110,92 @@ func (c *WebhookController) HandlePayoutWebhook(w http.ResponseWriter, r *http.R
 	}
 	defer r.Body.Close()
 
-	// 2. Verify Razorpay webhook signature (X-Razorpay-Signature header)
-	signature := r.Header.Get("X-Razorpay-Signature")
+	// 2. Verify Cashfree webhook signature
+	signature := pickFirst(
+		r.Header.Get("x-webhook-signature"),
+		r.Header.Get("X-Webhook-Signature"),
+		r.Header.Get("x-cashfree-signature"),
+		r.Header.Get("X-Cashfree-Signature"),
+	)
 	if !c.payoutProvider.ValidateWebhookSignature(body, signature) {
 		RespondError(w, http.StatusUnauthorized, "Invalid webhook signature")
 		return
 	}
 
-	// 3. Parse Razorpay webhook event
-	var event RazorpayWebhookEvent
+	// 3. Parse Cashfree webhook event
+	var event CashfreePayoutWebhookEvent
 	if err := json.Unmarshal(body, &event); err != nil {
 		RespondError(w, http.StatusBadRequest, "Invalid webhook payload")
 		return
 	}
 
-	// 4. Map event to internal status
-	status := mapRazorpayWebhookEvent(event.Event)
+	// 4. Map event/status to internal status
+	eventName := pickFirst(event.Event, event.Type)
+	status := mapCashfreeWebhookStatus(eventName, pickFirst(
+		event.Status,
+		func() string {
+			if event.Data != nil {
+				return event.Data.Status
+			}
+			return ""
+		}(),
+		func() string {
+			if event.Transfer != nil {
+				return event.Transfer.Status
+			}
+			return ""
+		}(),
+	))
 	if status == "" {
-		// Unrecognised event — acknowledge so Razorpay doesn't retry
-		log.Printf("[webhook] ignoring unhandled Razorpay event: %s", event.Event)
+		// Unrecognised event — acknowledge so provider doesn't retry
+		log.Printf("[webhook] ignoring unhandled cashfree event: %s", eventName)
 		RespondSuccess(w, http.StatusOK, map[string]string{"message": "event ignored"})
 		return
 	}
 
-	// 5. Extract our payment ID from the reference_id field.
-	//    We set reference_id = idempotency key when creating the payout;
-	//    the idempotency key is our payment UUID.
-	payoutEntity := event.Payload.Payout.Entity
-	paymentID, err := uuid.Parse(payoutEntity.ReferenceID)
+	// 5. Extract our payment ID from transfer/reference ID.
+	paymentIDString := pickFirst(
+		event.TransferID,
+		event.ReferenceID,
+		func() string {
+			if event.Data != nil {
+				return pickFirst(event.Data.TransferID, event.Data.ReferenceID)
+			}
+			return ""
+		}(),
+		func() string {
+			if event.Transfer != nil {
+				return pickFirst(event.Transfer.TransferID, event.Transfer.ReferenceID)
+			}
+			return ""
+		}(),
+	)
+
+	paymentID, err := uuid.Parse(paymentIDString)
 	if err != nil {
-		log.Printf("[webhook] could not parse reference_id as UUID: %s", payoutEntity.ReferenceID)
-		RespondError(w, http.StatusBadRequest, "Invalid reference_id in payout entity")
+		log.Printf("[webhook] could not parse transfer/reference ID as UUID: %s", paymentIDString)
+		RespondError(w, http.StatusBadRequest, "Invalid transfer/reference ID in payout event")
 		return
 	}
 
 	// 6. Build error message from available fields
-	var errMsg string
-	if payoutEntity.FailureReason != "" {
-		errMsg = payoutEntity.FailureReason
-	} else if payoutEntity.StatusDetails != nil {
-		errMsg = payoutEntity.StatusDetails.Description
-	} else if payoutEntity.Error != nil {
-		errMsg = payoutEntity.Error.Description
-	}
+	errMsg := pickFirst(
+		event.ErrorMessage,
+		event.Reason,
+		event.Message,
+		func() string {
+			if event.Data != nil {
+				return pickFirst(event.Data.ErrorMessage, event.Data.Reason, event.Data.Message)
+			}
+			return ""
+		}(),
+		func() string {
+			if event.Transfer != nil {
+				return pickFirst(event.Transfer.ErrorMessage, event.Transfer.Reason, event.Transfer.Message)
+			}
+			return ""
+		}(),
+	)
 
 	// 7. Delegate to service layer
 	if err := c.payoutService.HandlePayoutWebhook(r.Context(), paymentID, status, errMsg); err != nil {

@@ -2,7 +2,7 @@
 
 **A production-grade event booking platform backend built with Go, following Clean Architecture and enterprise design patterns.**
 
-MySlotMate allows users to discover and book event slots, and enables verified hosts to create and manage events, track earnings, and communicate with attendees — all backed by Aadhar-based identity verification, real-time WebSocket updates, and a wallet-based payment/payout system powered by Razorpay.
+MySlotMate allows users to discover and book event slots, and enables verified hosts to create and manage events, track earnings, and communicate with attendees — all backed by Aadhar-based identity verification, real-time WebSocket updates, and a wallet-based payment/payout system powered by Razorpay (collections) and Cashfree (payouts).
 
 ---
 
@@ -36,7 +36,7 @@ MySlotMate allows users to discover and book event slots, and enables verified h
 | File Storage | **AWS S3** (via AWS SDK for Go v2) |
 | Real-time | **Socket.IO** ([go-socket.io](https://github.com/googollee/go-socket.io)) |
 | Identity (KYC) | **Setu OKYC** (Aadhar verification) |
-| Payouts | **Razorpay Payouts API** (RazorpayX — bank & UPI transfers) |
+| Payouts | **Cashfree Payouts API** (bank & UPI transfers) |
 | Config | [godotenv](https://github.com/joho/godotenv) (`.env` file) |
 | UUID | [google/uuid](https://github.com/google/uuid) |
 
@@ -59,7 +59,7 @@ The project follows **Clean Architecture** principles with strict layer separati
 ├──────────────────────────────────────────────────────────┤
 │                    Infrastructure                         │
 │  Worker Pool │ Event Dispatcher │ Socket.IO │ Identity    │
-│              │  Payout Provider (Razorpay) │ Storage     │
+│              │  Payout Provider (Cashfree) │ Storage     │
 └──────────────────────────────────────────────────────────┘
                           │
                     ┌─────┴─────┐
@@ -74,7 +74,7 @@ The project follows **Clean Architecture** principles with strict layer separati
 | **Transport** | `internal/server`, `internal/controller` | HTTP routing, middleware, request decoding, JSON response formatting. **No business logic.** |
 | **Business Logic** | `internal/service` | Core rules (overbooking prevention, fee split, wallet debit/credit, verification flow), orchestrates repos + infra. |
 | **Data Access** | `internal/repository` | Direct SQL operations. Abstraction over PostgreSQL; mockable for unit tests. |
-| **Infrastructure** | `internal/lib/*` | Reusable components — Event Bus, Worker Pool, Identity (KYC), Payout (Razorpay), Storage (AWS S3), Real-time (Socket.IO). |
+| **Infrastructure** | `internal/lib/*` | Reusable components — Event Bus, Worker Pool, Identity (KYC), Payout (Cashfree), Storage (AWS S3), Real-time (Socket.IO). |
 
 ### Dependency Wiring (Composition Root)
 
@@ -82,7 +82,7 @@ All dependencies are wired in `cmd/api/run.go`:
 
 ```
 main() → Config → DB → Dispatcher → WorkerPool → Firebase (Auth) → AWS S3
-       → Repositories → Identity Provider → Payout Provider (Razorpay)
+      → Repositories → Identity Provider → Payout Provider (Cashfree)
        → Upload Service → Services → Controllers → Router → HTTP Server
 ```
 
@@ -111,7 +111,7 @@ dispatcher.Publish("booking_created", bookingData)
 ```
 
 ### 3. Strategy
-**Where:** `internal/lib/identity/` (Aadhar KYC), `internal/lib/payout/` (Razorpay payouts)  
+**Where:** `internal/lib/identity/` (Aadhar KYC), `internal/lib/payout/` (Cashfree payouts)  
 **Why:** Swap providers without changing service code. The service depends on the interface, not the implementation.
 
 ```go
@@ -128,7 +128,7 @@ type Provider interface {
     CheckStatus(ctx, providerRefID) (*TransferResponse, error)
     ValidateWebhookSignature(payload, signature) bool
 }
-// Implementation: RazorpayProvider (RazorpayX Payouts API)
+// Implementation: CashfreeProvider (Cashfree Payouts API)
 ```
 
 ### 4. Repository
@@ -183,7 +183,7 @@ myslotmate-backend/
 │   │   ├── support_controller.go   # Support tickets with evidence upload
 │   │   ├── upload_controller.go    # Generic file upload endpoint (AWS S3)
 │   │   ├── user_controller.go      # Signup, Aadhar, profile, saved experiences
-│   │   └── webhook_controller.go   # Razorpay payout webhooks
+│   │   └── webhook_controller.go   # Cashfree payout webhooks + Razorpay payment webhooks
 │   ├── db/
 │   │   └── db.go                   # PostgreSQL connection (pgx)
 │   ├── firebase/
@@ -196,7 +196,7 @@ myslotmate-backend/
 │   │   │   └── setu_provider.go    # Setu OKYC implementation
 │   │   ├── payout/
 │   │   │   ├── provider.go         # Strategy interface (payouts)
-│   │   │   └── razorpay_provider.go# Razorpay Payouts API implementation
+│   │   │   ├── cashfree_provider.go# Cashfree Payouts API implementation
 │   │   ├── realtime/
 │   │   │   └── socket_service.go   # Socket.IO server
 │   │   ├── storage/
@@ -715,7 +715,7 @@ This flow demonstrates the interaction between multiple layers and design patter
 
 ## Payout Flow
 
-Hosts withdraw earnings to their bank account or UPI via Razorpay Payouts API (RazorpayX).
+Hosts withdraw earnings to their bank account or UPI via Cashfree Payouts API.
 
 ### Adding a Payout Method
 
@@ -734,38 +734,37 @@ Hosts withdraw earnings to their bank account or UPI via Razorpay Payouts API (R
 4.  Service validates: amount ≤ Account.balance_cents
 5.  Host wallet debited: Account.balance_cents -= amount
 6.  Payment record created: type=payout, status=processing
-7.  Razorpay Payouts API called (POST /v1/payouts) with:
-    - Inline fund account creation (bank_account or vpa)
-    - IMPS mode for bank, UPI mode for UPI
-    - Reference ID = payment UUID (for idempotency)
-8.  On Razorpay success → Payment status updated with provider ref ID
-9.  On Razorpay failure → Wallet credited back, Payment status=failed
+7.  Cashfree Payouts API called with transfer payload:
+  - `transfer_id` = payment UUID
+  - Beneficiary instrument details for bank (`bank_account_number`, `bank_ifsc`) or UPI (`vpa`)
+8.  On provider success → Payment status updated with provider ref ID
+9.  On provider failure → Wallet credited back, Payment status=failed
 ```
 
 ### Webhook Processing (Async Settlement)
 
 ```
-1.  Razorpay sends POST /webhooks/payout with event payload
-2.  Webhook controller verifies X-Razorpay-Signature (HMAC-SHA256)
+1.  Cashfree sends POST /webhooks/payout with event payload
+2.  Webhook controller verifies webhook signature (HMAC-SHA256)
 3.  Event type mapped to internal status:
-      payout.processed → completed
-      payout.failed    → failed (wallet credited back)
-      payout.reversed  → reversed (wallet credited back)
+  transfer success → completed
+  transfer failed  → failed (wallet credited back)
+  transfer reversed → reversed (wallet credited back)
 4.  Payment record updated with final status
 5.  PayoutCompleted / PayoutFailed event published
 ```
 
-### Razorpay Integration Details
+### Cashfree Payout Integration Details
 
 | Feature | Implementation |
 |---------|---------------|
-| API | RazorpayX Payouts API (`POST /v1/payouts`) |
-| Auth | HTTP Basic Auth (KeyID:KeySecret) |
-| Fund Account | Inline creation (no pre-registration needed) |
-| Bank Transfer | IMPS mode (instant, up to ₹5L) |
-| UPI Transfer | UPI mode via VPA address |
+| API | Cashfree Payouts API (`POST /payout/transfers`) |
+| Auth | API headers (`x-client-id`, `x-client-secret`) |
+| Beneficiary | Inline `beneficiary_details` payload |
+| Bank Transfer | `transfer_mode=banktransfer` with account + IFSC |
+| UPI Transfer | `transfer_mode=upi` with VPA |
 | Webhook | HMAC-SHA256 signature verification |
-| Idempotency | `reference_id` = payment UUID |
+| Idempotency | `transfer_id` = payment UUID |
 
 ### Earnings Dashboard
 
@@ -1015,7 +1014,7 @@ Returns `[{ "file_name": "...", "url": "https://...", "size": 12345 }]`
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/webhooks/payout` | Razorpay payout webhook (signature verified) |
+| `POST` | `/webhooks/payout` | Cashfree payout webhook (signature verified) |
 
 ### Real-time (Socket.IO)
 
@@ -1039,7 +1038,8 @@ Returns `[{ "file_name": "...", "url": "https://...", "size": 12345 }]`
 - **PostgreSQL 15+**
 - **Firebase project** with service account credentials
 - **AWS account** with an S3 bucket and IAM credentials
-- **Razorpay account** with RazorpayX (Payouts) enabled
+- **Razorpay account** (for wallet top-up collections)
+- **Cashfree account** with payouts enabled
 - **Setu account** for Aadhar OKYC
 
 ### Setup
@@ -1051,7 +1051,7 @@ cd myslotmate-backend
 
 # 2. Configure environment
 cp .env.example .env
-# Edit .env with your database URL, Firebase config, Razorpay keys, Setu keys
+# Edit .env with your database URL, Firebase config, Razorpay keys, Cashfree keys, Setu keys
 
 # 3. Run migrations
 go run cmd/migrate/run.go
@@ -1092,8 +1092,13 @@ Configuration is loaded from environment variables (with `.env` support via godo
 | `SETU_PRODUCT_INSTANCE_ID` | — | Setu product instance ID |
 | `RAZORPAY_KEY_ID` | — | Razorpay API key ID (required) |
 | `RAZORPAY_KEY_SECRET` | — | Razorpay API key secret (required) |
-| `RAZORPAY_ACCOUNT_NUMBER` | — | RazorpayX linked bank account number |
-| `RAZORPAY_WEBHOOK_SECRET` | — | Razorpay webhook secret (for signature verification) |
+| `RAZORPAY_PAYMENT_WEBHOOK_SECRET` | — | Razorpay payment webhook secret |
+| `RAZORPAY_WEBHOOK_SECRET` | — | Legacy/shared Razorpay webhook secret fallback |
+| `CASHFREE_BASE_URL` | `https://payout-api.cashfree.com` | Cashfree payout API base URL |
+| `CASHFREE_CLIENT_ID` | — | Cashfree client ID for payouts |
+| `CASHFREE_CLIENT_SECRET` | — | Cashfree client secret for payouts |
+| `CASHFREE_WEBHOOK_SECRET` | — | Cashfree payout webhook secret |
+| `CASHFREE_API_VERSION` | `2024-01-01` | Cashfree API version header |
 
 ---
 

@@ -3,7 +3,7 @@ info:
   title: MySlotMate API
   description: |
     Backend API for **MySlotMate** – a slot-booking platform with wallet-based payments,
-    Razorpay payouts, Aadhar (Setu OKYC) verification, AWS S3 file uploads,
+    Cashfree payouts, Aadhar (Setu OKYC) verification, AWS S3 file uploads,
     and real-time inbox messaging.
 
     Every response follows the standard envelope:
@@ -45,7 +45,7 @@ tags:
   - name: Upload
     description: Generic file upload (AWS S3)
   - name: Webhooks
-    description: Razorpay webhook receivers (payouts + payment collection)
+    description: Cashfree payout + Razorpay payment webhook receivers
   - name: Admin
     description: Admin-only host application management (requires ADMIN_EMAIL)
 
@@ -1297,7 +1297,7 @@ paths:
   /payouts/withdraw:
     post:
       tags: [Payouts]
-      summary: Request a payout withdrawal (Razorpay)
+      summary: Request a payout withdrawal (Cashfree)
       operationId: withdraw
       requestBody:
         required: true
@@ -1829,13 +1829,13 @@ paths:
   /webhooks/payout:
     post:
       tags: [Webhooks]
-      summary: Razorpay payout webhook receiver
-      operationId: razorpayPayoutWebhook
+      summary: Cashfree payout webhook receiver
+      operationId: cashfreePayoutWebhook
       description: |
-        Called by Razorpay when a payout status changes.
-        The signature header `X-Razorpay-Signature` is verified using HMAC-SHA256.
+        Called by Cashfree when a payout/transfer status changes.
+        The webhook signature header is verified using HMAC-SHA256.
       parameters:
-        - name: X-Razorpay-Signature
+        - name: x-webhook-signature
           in: header
           required: true
           schema:
@@ -1845,7 +1845,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/RazorpayWebhookEvent"
+              $ref: "#/components/schemas/CashfreePayoutWebhookEvent"
       responses:
         "200":
           description: Webhook processed
@@ -2563,60 +2563,57 @@ components:
           type: boolean
           default: false
 
-    RazorpayWebhookEvent:
+    CashfreePayoutWebhookEvent:
       type: object
       properties:
-        entity:
-          type: string
-          example: "event"
-        account_id:
-          type: string
         event:
           type: string
-          example: "payout.processed"
-        contains:
-          type: array
-          items:
-            type: string
-        payload:
-          type: object
-          properties:
-            payout:
-              type: object
-              properties:
-                entity:
-                  $ref: "#/components/schemas/RazorpayPayoutEntity"
-        created_at:
-          type: integer
-          format: int64
-
-    RazorpayPayoutEntity:
-      type: object
-      properties:
-        id:
+          example: "TRANSFER_SUCCESS"
+        type:
           type: string
-          example: "pout_EKm3ELkQ0K2gxj"
-        fund_account_id:
+          example: "TRANSFER_SUCCESS"
+        transfer_id:
           type: string
-        amount:
-          type: integer
-          format: int64
-        currency:
-          type: string
-          example: "INR"
-        status:
-          type: string
-          enum: [processed, reversed, failed, cancelled]
-        mode:
-          type: string
-          enum: [NEFT, RTGS, IMPS, UPI]
-        purpose:
-          type: string
+          description: Payment UUID passed as transfer_id during payout initiation
         reference_id:
           type: string
-        narration:
+          nullable: true
+        status:
           type: string
-        failure_reason:
+          example: "SUCCESS"
+        message:
+          type: string
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+        data:
+          $ref: "#/components/schemas/CashfreePayoutTransferEntity"
+        transfer:
+          $ref: "#/components/schemas/CashfreePayoutTransferEntity"
+
+    CashfreePayoutTransferEntity:
+      type: object
+      properties:
+        transfer_id:
+          type: string
+          description: Payment UUID passed as transfer_id during payout initiation
+        reference_id:
+          type: string
+          nullable: true
+        status:
+          type: string
+          example: "SUCCESS"
+        message:
+          type: string
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+        error_message:
           type: string
           nullable: true
 

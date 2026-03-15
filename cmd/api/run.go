@@ -114,23 +114,31 @@ func main() {
 	})
 	log.Println("Using Setu Aadhar Provider")
 
-	// Strategy Pattern: Payout Provider (Razorpay)
+	// Strategy Pattern: Payout Provider (Cashfree)
+	cfClientID := cfg.Cashfree.ClientID
+	cfClientSecret := cfg.Cashfree.ClientSecret
+	if cfClientID == "" || cfClientSecret == "" {
+		log.Println("Warning: Cashfree credentials not configured — payouts disabled (using dummy keys)")
+		cfClientID = "cf_dummy_client_id"
+		cfClientSecret = "cf_dummy_client_secret"
+	}
+	payoutProvider := payout.NewCashfreeProvider(payout.CashfreeConfig{
+		BaseURL:       cfg.Cashfree.BaseURL,
+		ClientID:      cfClientID,
+		ClientSecret:  cfClientSecret,
+		WebhookSecret: cfg.Cashfree.WebhookSecret,
+		APIVersion:    cfg.Cashfree.APIVersion,
+	})
+	log.Println("Using Cashfree Payout Provider")
+
+	// Strategy Pattern: Payment Collection Provider (Razorpay Standard)
 	rzpKeyID := cfg.Razorpay.KeyID
 	rzpKeySecret := cfg.Razorpay.KeySecret
 	if rzpKeyID == "" || rzpKeySecret == "" {
-		log.Println("Warning: Razorpay credentials not configured — payouts disabled (using dummy keys)")
+		log.Println("Warning: Razorpay credentials not configured — payment collection disabled (using dummy keys)")
 		rzpKeyID = "rzp_test_dummy"
 		rzpKeySecret = "dummy_secret"
 	}
-	payoutProvider := payout.NewRazorpayProvider(payout.RazorpayConfig{
-		KeyID:         rzpKeyID,
-		KeySecret:     rzpKeySecret,
-		AccountNumber: cfg.Razorpay.AccountNumber,
-		WebhookSecret: cfg.Razorpay.WebhookSecret,
-	})
-	log.Println("Using Razorpay Payout Provider")
-
-	// Strategy Pattern: Payment Collection Provider (Razorpay Standard)
 	paymentWebhookSecret := cfg.Razorpay.PaymentWebhookSecret
 	if paymentWebhookSecret == "" {
 		paymentWebhookSecret = cfg.Razorpay.WebhookSecret // fallback to shared secret

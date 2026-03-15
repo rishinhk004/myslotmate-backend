@@ -25,7 +25,7 @@ type TransferRequest struct {
 
 // TransferResponse is what the external provider returns.
 type TransferResponse struct {
-	ProviderRefID string // e.g. Razorpay payout ID
+	ProviderRefID string // e.g. provider transfer/payout ID
 	Status        string // "processing", "completed", "failed"
 	Error         string // non-empty on failure
 }
