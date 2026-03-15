@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"fmt"
+	"log"
 	"net/http"
 
 	"myslotmate-backend/internal/lib/storage"
@@ -39,14 +41,16 @@ func (c *UploadController) RegisterRoutes(r chi.Router) {
 // Response: { "data": [ { "file_name": "...", "url": "...", "size": 12345 }, ... ] }
 func (c *UploadController) Upload(w http.ResponseWriter, r *http.Request) {
 	if c.uploadService == nil {
-		RespondError(w, http.StatusServiceUnavailable, "File upload is not configured")
+		RespondError(w, http.StatusServiceUnavailable, "File upload is not configured. Please set AWS_S3_BUCKET, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY environment variables.")
 		return
 	}
 
 	const maxBody = 60 << 20 // 60 MB total
 	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 	if err := r.ParseMultipartForm(maxBody); err != nil {
-		RespondError(w, http.StatusBadRequest, "Request too large or invalid multipart form")
+		msg := fmt.Sprintf("Invalid multipart form: %v", err)
+		log.Printf("Upload error - ParseMultipartForm: %s", msg)
+		RespondError(w, http.StatusBadRequest, msg)
 		return
 	}
 
@@ -57,15 +61,21 @@ func (c *UploadController) Upload(w http.ResponseWriter, r *http.Request) {
 
 	files := r.MultipartForm.File["files"]
 	if len(files) == 0 {
-		RespondError(w, http.StatusBadRequest, "No files provided (use form field 'files')")
+		msg := fmt.Sprintf("No files in 'files' form field. Available fields: %v", r.MultipartForm.File)
+		log.Printf("Upload error - no files: %s", msg)
+		RespondError(w, http.StatusBadRequest, msg)
 		return
 	}
 
+	log.Printf("Uploading %d files to folder: %s", len(files), folder)
 	results, err := c.uploadService.UploadMultiple(r.Context(), folder, files)
 	if err != nil {
-		RespondError(w, http.StatusBadRequest, err.Error())
+		msg := fmt.Sprintf("S3 upload failed: %v", err)
+		log.Printf("Upload error - S3 failure: %s", msg)
+		RespondError(w, http.StatusBadRequest, msg)
 		return
 	}
 
+	log.Printf("Successfully uploaded %d files", len(results))
 	RespondSuccess(w, http.StatusOK, results)
 }

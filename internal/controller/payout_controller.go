@@ -101,15 +101,14 @@ func (c *PayoutController) SetPrimaryMethod(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	var body struct {
-		HostID uuid.UUID `json:"host_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		RespondError(w, http.StatusBadRequest, "Invalid request payload")
+	hostIDStr := r.URL.Query().Get("host_id")
+	hostID, err := uuid.Parse(hostIDStr)
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, "Missing or invalid host_id query param")
 		return
 	}
 
-	if err := c.payoutService.SetPrimaryMethod(r.Context(), body.HostID, methodID); err != nil {
+	if err := c.payoutService.SetPrimaryMethod(r.Context(), hostID, methodID); err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

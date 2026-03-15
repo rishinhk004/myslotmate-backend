@@ -9,6 +9,7 @@ import (
 	"myslotmate-backend/internal/lib/event"
 	"myslotmate-backend/internal/lib/identity"
 	"myslotmate-backend/internal/lib/payment"
+	"myslotmate-backend/internal/lib/validation"
 	"myslotmate-backend/internal/lib/worker"
 	"myslotmate-backend/internal/models"
 	"myslotmate-backend/internal/repository"
@@ -222,6 +223,10 @@ func (s *userService) UpdateProfile(ctx context.Context, userID uuid.UUID, req U
 		user.Name = *req.Name
 	}
 	if req.AvatarURL != nil {
+		// Validate avatar URL: reject blob URLs and localhost URLs
+		if err := validation.ValidateImageURL(*req.AvatarURL); err != nil {
+			return nil, err
+		}
 		user.AvatarURL = req.AvatarURL
 	}
 	if req.City != nil {

@@ -124,7 +124,7 @@ func (s *payoutService) AddPayoutMethod(ctx context.Context, hostID uuid.UUID, r
 		IFSC:                   req.IFSC,
 		BeneficiaryName:        req.BeneficiaryName,
 		UPIID:                  req.UPIID,
-		IsVerified:             false, // needs verification flow
+		IsVerified:             true, // auto-verified by default
 		IsPrimary:              isPrimary,
 		CreatedAt:              time.Now(),
 		UpdatedAt:              time.Now(),

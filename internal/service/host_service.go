@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"myslotmate-backend/internal/lib/event"
+	"myslotmate-backend/internal/lib/validation"
 	"myslotmate-backend/internal/models"
 	"myslotmate-backend/internal/repository"
 
@@ -278,6 +279,10 @@ func (s *hostService) UpdateProfile(ctx context.Context, hostID uuid.UUID, req H
 		host.LastName = *req.LastName
 	}
 	if req.AvatarURL != nil {
+		// Validate avatar URL: reject blob URLs and localhost URLs
+		if err := validation.ValidateImageURL(*req.AvatarURL); err != nil {
+			return nil, err
+		}
 		host.AvatarURL = req.AvatarURL
 	}
 	if req.Tagline != nil {

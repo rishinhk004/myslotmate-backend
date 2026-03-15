@@ -124,15 +124,26 @@ func (r *postgresPayoutRepository) SetPrimary(ctx context.Context, hostID uuid.U
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
 
-	if _, err := tx.ExecContext(ctx, `UPDATE payout_methods SET is_primary = false WHERE host_id = $1`, hostID); err != nil {
+	_, err = tx.ExecContext(ctx, `UPDATE payout_methods SET is_primary = false, updated_at = now() WHERE host_id = $1`, hostID)
+	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE payout_methods SET is_primary = true WHERE id = $1 AND host_id = $2`, methodID, hostID); err != nil {
+
+	_, err = tx.ExecContext(ctx, `UPDATE payout_methods SET is_primary = true, updated_at = now() WHERE id = $1 AND host_id = $2`, methodID, hostID)
+	if err != nil {
 		return err
 	}
-	return tx.Commit()
+
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (r *postgresPayoutRepository) DeletePayoutMethod(ctx context.Context, id uuid.UUID) error {
@@ -165,7 +176,13 @@ func (r *postgresPayoutRepository) IncrementEarnings(ctx context.Context, hostID
 }
 
 func (r *postgresPayoutRepository) AddPendingClearance(ctx context.Context, hostID uuid.UUID, amountCents int64) error {
-	query := `UPDATE host_earnings SET pending_clearance_cents = pending_clearance_cents + $1 WHERE host_id = $2`
+	query := `UPDATE host_earnings 
+		SET pending_clearance_cents = pending_clearance_cents + $1,
+		    estimated_clearance_at = CASE 
+		      WHEN estimated_clearance_at IS NULL THEN now()
+		      ELSE estimated_clearance_at
+		    END
+		WHERE host_id = $2`
 	_, err := r.db.ExecContext(ctx, query, amountCents, hostID)
 	return err
 }

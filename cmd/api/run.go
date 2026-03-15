@@ -75,7 +75,7 @@ func main() {
 
 	// Upload service backed by AWS S3 (nil-safe if bucket not configured)
 	var uploadService *storage.UploadService
-	if cfg.S3.Bucket != "" {
+	if cfg.S3.Bucket != "" && cfg.S3.AccessKey != "" && cfg.S3.SecretKey != "" {
 		awsCfg, err := awscfg.LoadDefaultConfig(ctx,
 			awscfg.WithRegion(cfg.S3.Region),
 			awscfg.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
@@ -87,9 +87,14 @@ func main() {
 		}
 		s3Client := s3.NewFromConfig(awsCfg)
 		uploadService = storage.NewUploadService(s3Client, cfg.S3.Bucket, cfg.S3.Region)
-		log.Println("AWS S3 upload service enabled")
+		log.Printf("✓ AWS S3 upload service enabled: bucket=%s, region=%s", cfg.S3.Bucket, cfg.S3.Region)
 	} else {
-		log.Println("Warning: AWS S3 bucket not configured — file uploads disabled")
+		log.Println("✗ WARNING: AWS S3 not fully configured — file uploads DISABLED")
+		log.Println("  Set these environment variables to enable uploads:")
+		log.Println("    AWS_S3_BUCKET=your-bucket-name")
+		log.Println("    AWS_S3_REGION=ap-south-1")
+		log.Println("    AWS_ACCESS_KEY_ID=your-access-key")
+		log.Println("    AWS_SECRET_ACCESS_KEY=your-secret-key")
 	}
 
 	// Repository Pattern: Data Layer
