@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"myslotmate-backend/internal/lib/event"
@@ -84,6 +85,8 @@ type eventService struct {
 	dispatcher  *event.Dispatcher
 }
 
+var ErrInvalidEventMood = errors.New("invalid event mood")
+
 func NewEventService(er repository.EventRepository, br repository.BookingRepository, d *event.Dispatcher) EventService {
 	return &eventService{
 		eventRepo:   er,
@@ -92,7 +95,20 @@ func NewEventService(er repository.EventRepository, br repository.BookingReposit
 	}
 }
 
+func normalizeEventMood(mood *models.EventMood) (*models.EventMood, error) {
+	canonical, err := models.NormalizeEventMood(mood)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidEventMood, err)
+	}
+	return canonical, nil
+}
+
 func (s *eventService) CreateEvent(ctx context.Context, hostID uuid.UUID, req EventCreateRequest) (*models.Event, error) {
+	normalizedMood, err := normalizeEventMood(req.Mood)
+	if err != nil {
+		return nil, err
+	}
+
 	now := time.Now()
 	status := req.Status
 	if status == "" {
@@ -104,7 +120,7 @@ func (s *eventService) CreateEvent(ctx context.Context, hostID uuid.UUID, req Ev
 		HostID:             hostID,
 		Title:              req.Title,
 		HookLine:           req.HookLine,
-		Mood:               req.Mood,
+		Mood:               normalizedMood,
 		Description:        req.Description,
 		CoverImageURL:      req.CoverImageURL,
 		GalleryURLs:        pq.StringArray(req.GalleryURLs),
@@ -161,7 +177,11 @@ func (s *eventService) UpdateEvent(ctx context.Context, eventID uuid.UUID, hostI
 		evt.HookLine = req.HookLine
 	}
 	if req.Mood != nil {
-		evt.Mood = req.Mood
+		normalizedMood, err := normalizeEventMood(req.Mood)
+		if err != nil {
+			return nil, err
+		}
+		evt.Mood = normalizedMood
 	}
 	if req.Description != nil {
 		evt.Description = req.Description

@@ -119,9 +119,20 @@ func main() {
 			log.Fatalf("cannot read %s: %v", path, err)
 		}
 
+		migrationSQL := extractUpSQL(string(content))
+		if strings.TrimSpace(migrationSQL) == "" {
+			log.Printf("  -> %s (no up statements found, skipping SQL execution)", name)
+			_, err = sqlDB.ExecContext(ctx,
+				"INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING", name)
+			if err != nil {
+				log.Fatalf("cannot record migration %s: %v", name, err)
+			}
+			continue
+		}
+
 		log.Printf("  -> %s", name)
 
-		_, err = sqlDB.ExecContext(ctx, string(content))
+		_, err = sqlDB.ExecContext(ctx, migrationSQL)
 		if err != nil {
 			log.Fatalf("migration %s failed: %v", name, err)
 		}
@@ -135,4 +146,45 @@ func main() {
 	}
 
 	fmt.Println("Migrations complete.")
+}
+
+func extractUpSQL(content string) string {
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	lines := strings.Split(normalized, "\n")
+
+	upIndex := -1
+	downIndex := -1
+
+	for i, line := range lines {
+		if isMigrationMarker(line, "up") {
+			upIndex = i
+			continue
+		}
+		if isMigrationMarker(line, "down") {
+			downIndex = i
+			break
+		}
+	}
+
+	if upIndex == -1 {
+		return normalized
+	}
+
+	start := upIndex + 1
+	end := len(lines)
+	if downIndex >= 0 && downIndex > start {
+		end = downIndex
+	}
+
+	return strings.Join(lines[start:end], "\n")
+}
+
+func isMigrationMarker(line string, direction string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(line))
+	if strings.HasPrefix(normalized, "--") {
+		normalized = strings.TrimSpace(strings.TrimPrefix(normalized, "--"))
+	}
+	normalized = strings.ReplaceAll(normalized, "  ", " ")
+
+	return normalized == "+migrate "+direction || normalized == "+goose "+direction
 }

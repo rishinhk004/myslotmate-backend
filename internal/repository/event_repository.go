@@ -62,6 +62,11 @@ func scanEvent(row interface {
 		}
 		return nil, err
 	}
+	normalizedMood, err := models.NormalizeEventMood(e.Mood)
+	if err != nil {
+		return nil, err
+	}
+	e.Mood = normalizedMood
 	return e, nil
 }
 
@@ -234,6 +239,11 @@ func (r *postgresEventRepository) scanEvents(ctx context.Context, query string, 
 		); err != nil {
 			return nil, err
 		}
+		normalizedMood, err := models.NormalizeEventMood(e.Mood)
+		if err != nil {
+			return nil, err
+		}
+		e.Mood = normalizedMood
 		events = append(events, e)
 	}
 	return events, nil

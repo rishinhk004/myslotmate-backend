@@ -2,7 +2,7 @@
 
 **A production-grade event booking platform backend built with Go, following Clean Architecture and enterprise design patterns.**
 
-MySlotMate allows users to discover and book event slots, and enables verified hosts to create and manage events, track earnings, and communicate with attendees — all backed by Aadhar-based identity verification, real-time WebSocket updates, and a wallet-based payment/payout system powered by Razorpay (collections) and Cashfree (payouts).
+MySlotMate allows users to discover and book event slots, and enables hosts to apply, get admin-approved, and then create and manage events, track earnings, and communicate with attendees — with optional Aadhar-based identity verification, real-time WebSocket updates, and a wallet-based payment/payout system powered by Razorpay (collections) and Cashfree (payouts).
 
 ---
 
@@ -338,7 +338,7 @@ myslotmate-backend/
 | `created_at` | TIMESTAMPTZ | |
 | `updated_at` | TIMESTAMPTZ | |
 
-> **Trigger:** `trg_host_user_must_be_verified` — prevents host creation unless `users.is_verified = true`.
+> **Approval Rule:** Users can submit host applications without pre-verification. On admin approval, `users.is_verified` and `hosts.is_identity_verified` are set to `true`.
 
 #### `accounts` (Wallet)
 | Column | Type | Constraints |
@@ -358,7 +358,7 @@ myslotmate-backend/
 | `host_id` | UUID | FK → `hosts` |
 | `title` | VARCHAR | NOT NULL |
 | `hook_line` | VARCHAR | Short hook line |
-| `mood` | ENUM | `adventure` \| `social` \| `wellness` \| `chill` \| `romantic` \| `intellectual` \| `foodie` \| `nightlife` |
+| `mood` | ENUM | `adventurous` \| `relaxing` \| `creative` \| `social` \| `educational` \| `wellness` \| `culinary` \| `cultural` |
 | `description` | TEXT | |
 | `cover_image_url` | VARCHAR | Cover image URL |
 | `gallery_urls` | TEXT[] | Gallery image URLs |
@@ -529,7 +529,7 @@ myslotmate-backend/
 | `payout_method_type` | `bank`, `upi` |
 | `host_application_status` | `draft`, `pending`, `under_review`, `approved`, `rejected` |
 | `event_status` | `draft`, `live`, `paused` |
-| `event_mood` | `adventure`, `social`, `wellness`, `chill`, `romantic`, `intellectual`, `foodie`, `nightlife` |
+| `event_mood` | `adventurous`, `relaxing`, `creative`, `social`, `educational`, `wellness`, `culinary`, `cultural` |
 | `cancellation_policy` | `flexible`, `moderate`, `strict` |
 | `support_ticket_status` | `open`, `in_progress`, `resolved`, `closed` |
 | `support_category` | `report_participant`, `technical_support`, `policy_help` |
@@ -541,7 +541,6 @@ myslotmate-backend/
 
 | Trigger | Purpose |
 |---------|---------|
-| `trg_host_user_must_be_verified` | Prevents host creation if `user.is_verified` is `false` |
 | `set_updated_at()` | Auto-updates `updated_at` on row modification (all tables) |
 | `create_user_account()` | Auto-creates a wallet `Account` when a `User` is inserted |
 | `create_host_account()` | Auto-creates a wallet `Account` when a `Host` is inserted |
@@ -709,7 +708,7 @@ This flow demonstrates the interaction between multiple layers and design patter
 10. `UserVerified` event published (Observer pattern)
 11. Background worker sends "Verification Successful" notification (Worker Pool pattern)
 
-> After verification, the user can create a Host profile. The `trg_host_user_must_be_verified` trigger enforces this at the DB level.
+> Aadhar verification remains available for user KYC. Host applications do not require pre-verification; admin approval marks the applicant as verified.
 
 ---
 
@@ -927,7 +926,7 @@ All responses follow a standardized JSON envelope:
 | `GET` | `/events/{eventID}` | — | Get event details |
 | `GET` | `/events/host/{hostID}` | — | List all events for a host |
 | `GET` | `/events/host/{hostID}/filtered` | — | Filtered search (status, mood, date range) |
-| `GET` | `/events/calendar/{hostID}` | — | Calendar view of events |
+| `GET` | `/events/calendar/{hostID}` | — | Calendar view of events (`start`/`end` optional; defaults to current month) |
 | `POST` | `/events/{eventID}/publish` | 🔒 | Publish a draft event (status → live) |
 | `POST` | `/events/{eventID}/pause` | 🔒 | Pause a live event (status → paused) |
 | `POST` | `/events/{eventID}/resume` | 🔒 | Resume a paused event (status → live) |

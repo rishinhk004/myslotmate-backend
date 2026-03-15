@@ -963,6 +963,20 @@ paths:
       operationId: getCalendarEvents
       parameters:
         - $ref: "#/components/parameters/HostIDPath"
+        - name: start
+          in: query
+          required: false
+          description: RFC3339 range start. If omitted with `end`, defaults to one month before `end`. If both are omitted, defaults to the current month.
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          required: false
+          description: RFC3339 range end. If omitted with `start`, defaults to one month after `start`. If both are omitted, defaults to the current month.
+          schema:
+            type: string
+            format: date-time
       responses:
         "200":
           description: Events for calendar rendering
@@ -3297,7 +3311,7 @@ components:
 
     EventMood:
       type: string
-      enum: [adventure, social, wellness, chill, romantic, intellectual, foodie, nightlife]
+      enum: [adventurous, relaxing, creative, social, educational, wellness, culinary, cultural]
 
     CancellationPolicy:
       type: string

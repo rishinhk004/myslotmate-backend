@@ -162,16 +162,13 @@ func (s *hostService) SubmitApplication(ctx context.Context, userID uuid.UUID, r
 }
 
 func (s *hostService) saveHostApplication(ctx context.Context, userID uuid.UUID, req HostApplicationRequest, status models.HostApplicationStatus) (*models.Host, error) {
-	// 1. Check if user exists and is verified
+	// 1. Check if user exists
 	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
 	if user == nil {
 		return nil, errors.New("user not found")
-	}
-	if !user.IsVerified {
-		return nil, errors.New("user is not verified")
 	}
 
 	now := time.Now()
@@ -355,9 +352,14 @@ func (s *hostService) ApproveApplication(ctx context.Context, hostID uuid.UUID) 
 	now := time.Now()
 	host.ApplicationStatus = models.HostApplicationApproved
 	host.ApprovedAt = &now
+	host.IsIdentityVerified = true
 
 	if err := s.hostRepo.Update(ctx, host); err != nil {
 		return nil, err
+	}
+
+	if err := s.userRepo.SetVerified(ctx, host.UserID); err != nil {
+		return nil, fmt.Errorf("failed to mark user as verified: %w", err)
 	}
 
 	s.dispatcher.Publish(event.HostApproved, host)

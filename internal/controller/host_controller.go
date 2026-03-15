@@ -85,6 +85,37 @@ type HostProfileUpdateRequestBody struct {
 	SocialWebsite   *string  `json:"social_website,omitempty"`
 }
 
+func (c *HostController) resolveHostIDFromRequest(r *http.Request) (uuid.UUID, int, string) {
+	hostIDStr := r.URL.Query().Get("host_id")
+	if hostIDStr != "" {
+		hostID, err := uuid.Parse(hostIDStr)
+		if err != nil {
+			return uuid.Nil, http.StatusBadRequest, "Invalid host_id"
+		}
+		return hostID, 0, ""
+	}
+
+	userIDStr := r.URL.Query().Get("user_id")
+	if userIDStr == "" {
+		return uuid.Nil, http.StatusBadRequest, "Missing host_id or user_id"
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		return uuid.Nil, http.StatusBadRequest, "Invalid user_id"
+	}
+
+	host, err := c.hostService.GetHostByUserID(r.Context(), userID)
+	if err != nil {
+		return uuid.Nil, http.StatusInternalServerError, err.Error()
+	}
+	if host == nil {
+		return uuid.Nil, http.StatusNotFound, "Host profile not found"
+	}
+
+	return host.ID, 0, ""
+}
+
 // ── Handlers ────────────────────────────────────────────────────────────────
 
 func (c *HostController) ListHosts(w http.ResponseWriter, r *http.Request) {
@@ -263,20 +294,15 @@ func (c *HostController) GetMyHostProfile(w http.ResponseWriter, r *http.Request
 }
 
 func (c *HostController) UpdateProfile(w http.ResponseWriter, r *http.Request) {
-	userIDStr := r.URL.Query().Get("user_id")
-	if userIDStr == "" {
-		RespondError(w, http.StatusBadRequest, "Missing user_id")
-		return
-	}
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		RespondError(w, http.StatusBadRequest, "Invalid user_id")
-		return
-	}
-
 	var req HostProfileUpdateRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		RespondError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	hostID, statusCode, message := c.resolveHostIDFromRequest(r)
+	if statusCode != 0 {
+		RespondError(w, statusCode, message)
 		return
 	}
 
@@ -290,8 +316,12 @@ func (c *HostController) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		SocialWebsite:   req.SocialWebsite,
 	}
 
-	host, err := c.hostService.UpdateProfile(r.Context(), userID, svcReq)
+	host, err := c.hostService.UpdateProfile(r.Context(), hostID, svcReq)
 	if err != nil {
+		if err.Error() == "host not found" {
+			RespondError(w, http.StatusNotFound, "Host profile not found")
+			return
+		}
 		RespondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -300,19 +330,18 @@ func (c *HostController) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *HostController) GetDashboardOverview(w http.ResponseWriter, r *http.Request) {
-	userIDStr := r.URL.Query().Get("user_id")
-	if userIDStr == "" {
-		RespondError(w, http.StatusBadRequest, "Missing user_id")
-		return
-	}
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		RespondError(w, http.StatusBadRequest, "Invalid user_id")
+	hostID, statusCode, message := c.resolveHostIDFromRequest(r)
+	if statusCode != 0 {
+		RespondError(w, statusCode, message)
 		return
 	}
 
-	overview, err := c.hostService.GetDashboardOverview(r.Context(), userID)
+	overview, err := c.hostService.GetDashboardOverview(r.Context(), hostID)
 	if err != nil {
+		if err.Error() == "host not found" {
+			RespondError(w, http.StatusNotFound, "Host profile not found")
+			return
+		}
 		RespondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -367,29 +396,18 @@ func (c *HostController) DisconnectSocial(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	userIDStr := r.URL.Query().Get("user_id")
-	if userIDStr == "" {
-		RespondError(w, http.StatusBadRequest, "Missing user_id")
-		return
-	}
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		RespondError(w, http.StatusBadRequest, "Invalid user_id")
+	hostID, statusCode, message := c.resolveHostIDFromRequest(r)
+	if statusCode != 0 {
+		RespondError(w, statusCode, message)
 		return
 	}
 
-	host, err := c.hostService.GetHostByUserID(r.Context(), userID)
+	updated, err := c.hostService.DisconnectSocial(r.Context(), hostID, platform)
 	if err != nil {
-		RespondError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if host == nil {
-		RespondError(w, http.StatusNotFound, "Host profile not found")
-		return
-	}
-
-	updated, err := c.hostService.DisconnectSocial(r.Context(), host.ID, platform)
-	if err != nil {
+		if err.Error() == "host not found" {
+			RespondError(w, http.StatusNotFound, "Host profile not found")
+			return
+		}
 		RespondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -400,30 +418,18 @@ func (c *HostController) DisconnectSocial(w http.ResponseWriter, r *http.Request
 // ── Attention Items ─────────────────────────────────────────────────────────
 
 func (c *HostController) GetAttentionItems(w http.ResponseWriter, r *http.Request) {
-	userIDStr := r.URL.Query().Get("user_id")
-	if userIDStr == "" {
-		RespondError(w, http.StatusBadRequest, "Missing user_id")
-		return
-	}
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		RespondError(w, http.StatusBadRequest, "Invalid user_id")
+	hostID, statusCode, message := c.resolveHostIDFromRequest(r)
+	if statusCode != 0 {
+		RespondError(w, statusCode, message)
 		return
 	}
 
-	// Resolve host from user ID
-	host, err := c.hostService.GetHostByUserID(r.Context(), userID)
+	items, err := c.hostService.GetAttentionItems(r.Context(), hostID)
 	if err != nil {
-		RespondError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if host == nil {
-		RespondError(w, http.StatusNotFound, "Host profile not found")
-		return
-	}
-
-	items, err := c.hostService.GetAttentionItems(r.Context(), host.ID)
-	if err != nil {
+		if err.Error() == "host not found" {
+			RespondError(w, http.StatusNotFound, "Host profile not found")
+			return
+		}
 		RespondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -434,29 +440,18 @@ func (c *HostController) GetAttentionItems(w http.ResponseWriter, r *http.Reques
 // ── Earnings Breakdown ──────────────────────────────────────────────────────
 
 func (c *HostController) GetEarningsBreakdown(w http.ResponseWriter, r *http.Request) {
-	userIDStr := r.URL.Query().Get("user_id")
-	if userIDStr == "" {
-		RespondError(w, http.StatusBadRequest, "Missing user_id")
-		return
-	}
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		RespondError(w, http.StatusBadRequest, "Invalid user_id")
+	hostID, statusCode, message := c.resolveHostIDFromRequest(r)
+	if statusCode != 0 {
+		RespondError(w, statusCode, message)
 		return
 	}
 
-	host, err := c.hostService.GetHostByUserID(r.Context(), userID)
+	breakdown, err := c.hostService.GetEarningsBreakdown(r.Context(), hostID)
 	if err != nil {
-		RespondError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if host == nil {
-		RespondError(w, http.StatusNotFound, "Host profile not found")
-		return
-	}
-
-	breakdown, err := c.hostService.GetEarningsBreakdown(r.Context(), host.ID)
-	if err != nil {
+		if err.Error() == "host not found" {
+			RespondError(w, http.StatusNotFound, "Host profile not found")
+			return
+		}
 		RespondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

@@ -31,6 +31,13 @@ type SetuConfig struct {
 	ProductInstanceID string
 }
 
+// AadharConfig controls which KYC strategy implementation to use.
+type AadharConfig struct {
+	Provider string // setu | mock
+	MockOTP  string
+	MockName string
+}
+
 // RazorpayConfig holds Razorpay Standard payment collection credentials.
 type RazorpayConfig struct {
 	KeyID                string
@@ -54,6 +61,7 @@ type Config struct {
 	RenderExternalURL string // RENDER_EXTERNAL_URL, used for self-ping keep-alive
 	Firebase          FirebaseConfig
 	Database          DatabaseConfig
+	Aadhar            AadharConfig
 	Setu              SetuConfig
 	Razorpay          RazorpayConfig
 	Cashfree          CashfreeConfig
@@ -81,6 +89,11 @@ func Load() (*Config, error) {
 		},
 		Database: DatabaseConfig{
 			URL: getEnv("DATABASE_URL", ""),
+		},
+		Aadhar: AadharConfig{
+			Provider: getEnv("AADHAR_PROVIDER", "setu"),
+			MockOTP:  getEnv("AADHAR_MOCK_OTP", "123456"),
+			MockName: getEnv("AADHAR_MOCK_NAME", "Test User"),
 		},
 		Setu: SetuConfig{
 			BaseURL:           getEnv("SETU_BASE_URL", "https://uat.setu.co"),

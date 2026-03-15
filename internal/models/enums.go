@@ -1,5 +1,10 @@
 package models
 
+import (
+	"fmt"
+	"strings"
+)
+
 // AccountOwnerType is the owner of an account (user or host).
 type AccountOwnerType string
 
@@ -92,15 +97,72 @@ const (
 type EventMood string
 
 const (
-	EventMoodAdventure    EventMood = "adventure"
-	EventMoodSocial       EventMood = "social"
-	EventMoodWellness     EventMood = "wellness"
-	EventMoodChill        EventMood = "chill"
-	EventMoodRomantic     EventMood = "romantic"
-	EventMoodIntellectual EventMood = "intellectual"
-	EventMoodFoodie       EventMood = "foodie"
-	EventMoodNightlife    EventMood = "nightlife"
+	EventMoodAdventurous EventMood = "adventurous"
+	EventMoodRelaxing    EventMood = "relaxing"
+	EventMoodCreative    EventMood = "creative"
+	EventMoodSocial      EventMood = "social"
+	EventMoodEducational EventMood = "educational"
+	EventMoodWellness    EventMood = "wellness"
+	EventMoodCulinary    EventMood = "culinary"
+	EventMoodCultural    EventMood = "cultural"
+
+	// Legacy DB/API aliases kept for backward compatibility.
+	EventMoodAdventureLegacy    EventMood = "adventure"
+	EventMoodChillLegacy        EventMood = "chill"
+	EventMoodRomanticLegacy     EventMood = "romantic"
+	EventMoodIntellectualLegacy EventMood = "intellectual"
+	EventMoodFoodieLegacy       EventMood = "foodie"
+	EventMoodNightlifeLegacy    EventMood = "nightlife"
 )
+
+var canonicalEventMoodValues = []string{
+	string(EventMoodAdventurous),
+	string(EventMoodRelaxing),
+	string(EventMoodCreative),
+	string(EventMoodSocial),
+	string(EventMoodEducational),
+	string(EventMoodWellness),
+	string(EventMoodCulinary),
+	string(EventMoodCultural),
+}
+
+// NormalizeEventMood converts both legacy and frontend mood labels into the
+// canonical frontend set used by the current product UI.
+func NormalizeEventMood(mood *EventMood) (*EventMood, error) {
+	if mood == nil {
+		return nil, nil
+	}
+
+	normalized := strings.ToLower(strings.TrimSpace(string(*mood)))
+	var canonical EventMood
+
+	switch normalized {
+	case string(EventMoodAdventurous), string(EventMoodAdventureLegacy):
+		canonical = EventMoodAdventurous
+	case string(EventMoodRelaxing), string(EventMoodChillLegacy):
+		canonical = EventMoodRelaxing
+	case string(EventMoodCreative), string(EventMoodRomanticLegacy):
+		canonical = EventMoodCreative
+	case string(EventMoodSocial):
+		canonical = EventMoodSocial
+	case string(EventMoodEducational), string(EventMoodIntellectualLegacy):
+		canonical = EventMoodEducational
+	case string(EventMoodWellness):
+		canonical = EventMoodWellness
+	case string(EventMoodCulinary), string(EventMoodFoodieLegacy):
+		canonical = EventMoodCulinary
+	case string(EventMoodCultural), string(EventMoodNightlifeLegacy):
+		canonical = EventMoodCultural
+	default:
+		return nil, fmt.Errorf(
+			"invalid event mood: %q (allowed: %s)",
+			string(*mood),
+			strings.Join(canonicalEventMoodValues, ", "),
+		)
+	}
+
+	return &canonical, nil
+}
 
 // CancellationPolicy defines the refund policy for an experience.
 type CancellationPolicy string

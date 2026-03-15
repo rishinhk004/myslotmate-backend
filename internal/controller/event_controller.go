@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -19,6 +20,51 @@ type EventController struct {
 
 func NewEventController(s service.EventService) *EventController {
 	return &EventController{eventService: s}
+}
+
+func resolveCalendarRange(r *http.Request) (time.Time, time.Time, int, string) {
+	startStr := r.URL.Query().Get("start")
+	endStr := r.URL.Query().Get("end")
+
+	if startStr == "" && endStr == "" {
+		now := time.Now()
+		start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+		end := start.AddDate(0, 1, 0)
+		return start, end, 0, ""
+	}
+
+	var (
+		start time.Time
+		end   time.Time
+		err   error
+	)
+
+	if startStr != "" {
+		start, err = time.Parse(time.RFC3339, startStr)
+		if err != nil {
+			return time.Time{}, time.Time{}, http.StatusBadRequest, "Invalid start time format"
+		}
+	}
+
+	if endStr != "" {
+		end, err = time.Parse(time.RFC3339, endStr)
+		if err != nil {
+			return time.Time{}, time.Time{}, http.StatusBadRequest, "Invalid end time format"
+		}
+	}
+
+	if startStr == "" {
+		start = end.AddDate(0, -1, 0)
+	}
+	if endStr == "" {
+		end = start.AddDate(0, 1, 0)
+	}
+
+	if !end.After(start) {
+		return time.Time{}, time.Time{}, http.StatusBadRequest, "end must be after start"
+	}
+
+	return start, end, 0, ""
 }
 
 func (c *EventController) RegisterRoutes(r chi.Router) {
@@ -149,6 +195,10 @@ func (c *EventController) CreateEvent(w http.ResponseWriter, r *http.Request) {
 
 	evt, err := c.eventService.CreateEvent(r.Context(), req.HostID, svcReq)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidEventMood) {
+			RespondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		RespondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -198,6 +248,10 @@ func (c *EventController) UpdateEvent(w http.ResponseWriter, r *http.Request) {
 
 	evt, err := c.eventService.UpdateEvent(r.Context(), eventID, body.HostID, svcReq)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidEventMood) {
+			RespondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		RespondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -285,21 +339,9 @@ func (c *EventController) GetCalendarEvents(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	startStr := r.URL.Query().Get("start")
-	endStr := r.URL.Query().Get("end")
-	if startStr == "" || endStr == "" {
-		RespondError(w, http.StatusBadRequest, "start and end query params required (RFC3339)")
-		return
-	}
-
-	start, err := time.Parse(time.RFC3339, startStr)
-	if err != nil {
-		RespondError(w, http.StatusBadRequest, "Invalid start time format")
-		return
-	}
-	end, err := time.Parse(time.RFC3339, endStr)
-	if err != nil {
-		RespondError(w, http.StatusBadRequest, "Invalid end time format")
+	start, end, statusCode, message := resolveCalendarRange(r)
+	if statusCode != 0 {
+		RespondError(w, statusCode, message)
 		return
 	}
 
