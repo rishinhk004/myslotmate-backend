@@ -196,24 +196,39 @@ func (s *bookingService) CreateBooking(ctx context.Context, userID uuid.UUID, re
 }
 
 func (s *bookingService) ConfirmBooking(ctx context.Context, bookingID uuid.UUID) (*models.Booking, error) {
+	fmt.Printf("[BOOKING] ConfirmBooking: bookingID=%s\n", bookingID)
+
 	booking, err := s.bookingRepo.GetByID(ctx, bookingID)
 	if err != nil {
+		fmt.Printf("[BOOKING] ConfirmBooking: GetByID error: %v\n", err)
 		return nil, err
 	}
 	if booking == nil {
+		fmt.Printf("[BOOKING] ConfirmBooking: booking not found\n")
 		return nil, errors.New("booking not found")
 	}
 	if booking.Status != models.BookingStatusPending {
+		fmt.Printf("[BOOKING] ConfirmBooking: cannot confirm from status=%s\n", booking.Status)
 		return nil, fmt.Errorf("booking cannot be confirmed from status: %s", booking.Status)
 	}
 
+	fmt.Printf("[BOOKING] ConfirmBooking: status=%s -> confirmed, quantity=%d\n", booking.Status, booking.Quantity)
 	booking.Status = models.BookingStatusConfirmed
 	booking.UpdatedAt = time.Now()
 
 	if err := s.bookingRepo.UpdateStatus(ctx, bookingID, models.BookingStatusConfirmed); err != nil {
+		fmt.Printf("[BOOKING] ConfirmBooking: UpdateStatus error: %v\n", err)
 		return nil, err
 	}
 
+	// Increment event's total_bookings counter
+	fmt.Printf("[BOOKING] ConfirmBooking: incrementing event %s by %d\n", booking.EventID, booking.Quantity)
+	if err := s.eventRepo.IncrementBookingCount(ctx, booking.EventID, booking.Quantity); err != nil {
+		fmt.Printf("[BOOKING] ERROR: IncrementBookingCount failed: %v\n", err)
+		// Non-critical — booking already confirmed, counter reconciliation can happen in background
+	}
+
+	fmt.Printf("[BOOKING] ConfirmBooking: SUCCESS\n")
 	s.dispatcher.Publish(event.BookingConfirmed, booking)
 	return booking, nil
 }

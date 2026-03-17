@@ -23,13 +23,13 @@ func NewInboxRepository(db *sql.DB) InboxRepository {
 	return &postgresInboxRepository{db: db}
 }
 
-var inboxColumns = `id, event_id, sender_type, sender_id, message, attachment_url, is_read, created_at`
+var inboxColumns = `id, event_id, host_id, sender_type, sender_id, message, attachment_url, is_read, created_at`
 
 func scanInboxMessage(row interface {
 	Scan(dest ...interface{}) error
 }) (*models.InboxMessage, error) {
 	m := &models.InboxMessage{}
-	err := row.Scan(&m.ID, &m.EventID, &m.SenderType, &m.SenderID, &m.Message, &m.AttachmentURL, &m.IsRead, &m.CreatedAt)
+	err := row.Scan(&m.ID, &m.EventID, &m.HostID, &m.SenderType, &m.SenderID, &m.Message, &m.AttachmentURL, &m.IsRead, &m.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -41,14 +41,14 @@ func scanInboxMessage(row interface {
 
 func (r *postgresInboxRepository) Create(ctx context.Context, msg *models.InboxMessage) error {
 	query := `
-		INSERT INTO inbox_messages (id, event_id, sender_type, sender_id, message, attachment_url, is_read, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO inbox_messages (id, event_id, host_id, sender_type, sender_id, message, attachment_url, is_read, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`
 	if msg.ID == uuid.Nil {
 		msg.ID = uuid.New()
 	}
 	_, err := r.db.ExecContext(ctx, query,
-		msg.ID, msg.EventID, msg.SenderType, msg.SenderID, msg.Message, msg.AttachmentURL, msg.IsRead, msg.CreatedAt,
+		msg.ID, msg.EventID, msg.HostID, msg.SenderType, msg.SenderID, msg.Message, msg.AttachmentURL, msg.IsRead, msg.CreatedAt,
 	)
 	return err
 }
@@ -64,7 +64,7 @@ func (r *postgresInboxRepository) ListByEventID(ctx context.Context, eventID uui
 	var msgs []*models.InboxMessage
 	for rows.Next() {
 		m := &models.InboxMessage{}
-		if err := rows.Scan(&m.ID, &m.EventID, &m.SenderType, &m.SenderID, &m.Message, &m.AttachmentURL, &m.IsRead, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.EventID, &m.HostID, &m.SenderType, &m.SenderID, &m.Message, &m.AttachmentURL, &m.IsRead, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		msgs = append(msgs, m)
@@ -88,7 +88,7 @@ func (r *postgresInboxRepository) ListByHostID(ctx context.Context, hostID uuid.
 	var msgs []*models.InboxMessage
 	for rows.Next() {
 		m := &models.InboxMessage{}
-		if err := rows.Scan(&m.ID, &m.EventID, &m.SenderType, &m.SenderID, &m.Message, &m.AttachmentURL, &m.IsRead, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.EventID, &m.HostID, &m.SenderType, &m.SenderID, &m.Message, &m.AttachmentURL, &m.IsRead, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		msgs = append(msgs, m)

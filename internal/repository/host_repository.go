@@ -16,6 +16,7 @@ type HostRepository interface {
 	Update(ctx context.Context, host *models.Host) error
 	UpdateApplicationStatus(ctx context.Context, id uuid.UUID, status models.HostApplicationStatus) error
 	ListByStatus(ctx context.Context, status models.HostApplicationStatus) ([]*models.Host, error)
+	UpdateAverageRating(ctx context.Context, hostID uuid.UUID, avgRating float64, totalReviews int) error
 }
 
 type postgresHostRepository struct {
@@ -146,4 +147,10 @@ func (r *postgresHostRepository) ListByStatus(ctx context.Context, status models
 		hosts = append(hosts, h)
 	}
 	return hosts, rows.Err()
+}
+
+func (r *postgresHostRepository) UpdateAverageRating(ctx context.Context, hostID uuid.UUID, avgRating float64, totalReviews int) error {
+	query := `UPDATE hosts SET avg_rating = $1, total_reviews = $2, updated_at = now() WHERE id = $3`
+	_, err := r.db.ExecContext(ctx, query, avgRating, totalReviews, hostID)
+	return err
 }

@@ -60,6 +60,7 @@ func (s *inboxService) SendMessage(ctx context.Context, req SendMessageRequest) 
 	msg := &models.InboxMessage{
 		ID:            uuid.New(),
 		EventID:       req.EventID,
+		HostID:        evt.HostID,
 		SenderType:    req.SenderType,
 		SenderID:      req.SenderID,
 		Message:       req.Message,
@@ -72,15 +73,17 @@ func (s *inboxService) SendMessage(ctx context.Context, req SendMessageRequest) 
 		return nil, err
 	}
 
-	// Real-time broadcast
-	roomName := "event_" + req.EventID.String()
-	s.socketService.BroadcastToRoom(roomName, "inbox_update", map[string]interface{}{
-		"id":          msg.ID,
-		"sender_type": msg.SenderType,
-		"sender_id":   msg.SenderID,
-		"message":     msg.Message,
-		"created_at":  msg.CreatedAt,
-	})
+	// Real-time broadcast (only if socket service is available)
+	if s.socketService != nil {
+		roomName := "event_" + req.EventID.String()
+		s.socketService.BroadcastToRoom(roomName, "inbox_update", map[string]interface{}{
+			"id":          msg.ID,
+			"sender_type": msg.SenderType,
+			"sender_id":   msg.SenderID,
+			"message":     msg.Message,
+			"created_at":  msg.CreatedAt,
+		})
+	}
 
 	return msg, nil
 }
@@ -101,6 +104,7 @@ func (s *inboxService) BroadcastMessage(ctx context.Context, hostID uuid.UUID, r
 	msg := &models.InboxMessage{
 		ID:         uuid.New(),
 		EventID:    req.EventID,
+		HostID:     hostID,
 		SenderType: models.MessageSenderHost,
 		SenderID:   &hostID,
 		Message:    req.Message,
@@ -112,15 +116,18 @@ func (s *inboxService) BroadcastMessage(ctx context.Context, hostID uuid.UUID, r
 		return nil, err
 	}
 
-	roomName := "event_" + req.EventID.String()
-	s.socketService.BroadcastToRoom(roomName, "inbox_update", map[string]interface{}{
-		"id":          msg.ID,
-		"sender_type": msg.SenderType,
-		"sender_id":   msg.SenderID,
-		"message":     req.Message,
-		"event_id":    req.EventID,
-		"created_at":  msg.CreatedAt,
-	})
+	// Real-time broadcast (only if socket service is available)
+	if s.socketService != nil {
+		roomName := "event_" + req.EventID.String()
+		s.socketService.BroadcastToRoom(roomName, "inbox_update", map[string]interface{}{
+			"id":          msg.ID,
+			"sender_type": msg.SenderType,
+			"sender_id":   msg.SenderID,
+			"message":     req.Message,
+			"event_id":    req.EventID,
+			"created_at":  msg.CreatedAt,
+		})
+	}
 
 	return msg, nil
 }

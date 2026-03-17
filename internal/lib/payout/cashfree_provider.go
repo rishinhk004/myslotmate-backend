@@ -71,48 +71,67 @@ type cashfreeBeneficiaryInstrumentDetails struct {
 func (p *CashfreeProvider) InitiateTransfer(ctx context.Context, req TransferRequest) (*TransferResponse, error) {
 	payoutReq, err := buildCashfreeTransferRequest(req)
 	if err != nil {
+		fmt.Printf("[CASHFREE] InitiateTransfer error: %v\n", err)
 		return nil, err
 	}
 
 	body, err := json.Marshal(payoutReq)
 	if err != nil {
+		fmt.Printf("[CASHFREE] Marshal error: %v\n", err)
 		return nil, fmt.Errorf("failed to marshal cashfree payout request: %w", err)
 	}
+
+	fmt.Printf("[CASHFREE] InitiateTransfer request: paymentID=%s, amount=%d, method=%s, url=%s\n",
+		req.PaymentID, req.AmountCents, req.MethodType, strings.TrimRight(p.cfg.BaseURL, "/")+"/payout/transfers")
 
 	url := strings.TrimRight(p.cfg.BaseURL, "/") + "/payout/transfers"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
+		fmt.Printf("[CASHFREE] HTTP request creation error: %v\n", err)
 		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 	}
 	p.setHeaders(httpReq)
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
+		fmt.Printf("[CASHFREE] HTTP call error: %v\n", err)
 		return nil, fmt.Errorf("cashfree API call failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		fmt.Printf("[CASHFREE] Response read error: %v\n", err)
 		return nil, fmt.Errorf("failed to read cashfree response: %w", err)
 	}
 
+	fmt.Printf("[CASHFREE] Response received: httpStatus=%d, bodyLength=%d, body=%s\n",
+		resp.StatusCode, len(respBody), string(respBody))
+
 	if resp.StatusCode >= 400 {
-		return &TransferResponse{
+		errorResp := &TransferResponse{
 			Status: "failed",
 			Error:  fmt.Sprintf("cashfree API error (HTTP %d): %s", resp.StatusCode, string(respBody)),
-		}, nil
+		}
+		fmt.Printf("[CASHFREE] API error response: %v\n", errorResp)
+		return errorResp, nil
 	}
 
 	parsed, err := parseCashfreeTransferResponse(respBody)
 	if err != nil {
+		fmt.Printf("[CASHFREE] Response parse error: %v\n", err)
 		return nil, fmt.Errorf("failed to parse cashfree response: %w", err)
 	}
 
+	fmt.Printf("[CASHFREE] Response parsed: status=%s, providerRefID=%s, error=%s\n",
+		parsed.Status, parsed.ProviderRefID, parsed.Error)
+
 	if parsed.ProviderRefID == "" {
 		parsed.ProviderRefID = req.PaymentID.String()
+		fmt.Printf("[CASHFREE] No provider ref ID in response, using paymentID: %s\n", parsed.ProviderRefID)
 	}
 
+	fmt.Printf("[CASHFREE] InitiateTransfer completed: paymentID=%s, status=%s\n", req.PaymentID, parsed.Status)
 	return parsed, nil
 }
 

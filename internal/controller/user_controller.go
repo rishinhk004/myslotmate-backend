@@ -30,6 +30,7 @@ func (c *UserController) RegisterRoutes(r chi.Router) {
 	r.Route("/users", func(r chi.Router) {
 		r.Get("/me", c.GetProfile)
 		r.Put("/me", c.UpdateProfile)
+		r.Get("/{userID}", c.GetUserByID)
 		r.Get("/wallet/balance", c.GetWalletBalance)
 		r.Post("/wallet/topup", c.InitiateTopUp)
 		r.Post("/wallet/topup/verify", c.VerifyTopUp)
@@ -41,10 +42,11 @@ func (c *UserController) RegisterRoutes(r chi.Router) {
 }
 
 type UserSignUpRequest struct {
-	AuthUID   string `json:"auth_uid"`
-	Email     string `json:"email"`
-	Name      string `json:"name"`
-	PhnNumber string `json:"phn_number"`
+	AuthUID   string  `json:"auth_uid"`
+	Email     string  `json:"email"`
+	Name      string  `json:"name"`
+	PhnNumber string  `json:"phn_number"`
+	AvatarURL *string `json:"avatar_url,omitempty"`
 }
 
 type InitiateAadharRequest struct {
@@ -119,6 +121,7 @@ func (c *UserController) HandleSignUp(w http.ResponseWriter, r *http.Request) {
 		Email:     req.Email,
 		Name:      req.Name,
 		PhnNumber: req.PhnNumber,
+		AvatarURL: req.AvatarURL,
 	}
 
 	user, err := c.userService.SignUp(r.Context(), svcReq)
@@ -148,6 +151,27 @@ func (c *UserController) GetProfile(w http.ResponseWriter, r *http.Request) {
 
 	user, err := c.userService.GetProfile(r.Context(), userID)
 	if err != nil {
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	RespondSuccess(w, http.StatusOK, user)
+}
+
+func (c *UserController) GetUserByID(w http.ResponseWriter, r *http.Request) {
+	userIDStr := chi.URLParam(r, "userID")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid user ID")
+		return
+	}
+
+	user, err := c.userService.GetProfile(r.Context(), userID)
+	if err != nil {
+		if err.Error() == "user not found" {
+			RespondError(w, http.StatusNotFound, err.Error())
+			return
+		}
 		RespondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

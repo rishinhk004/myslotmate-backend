@@ -10,6 +10,7 @@ import (
 type InboxMessage struct {
 	ID            uuid.UUID         `db:"id" json:"id"`
 	EventID       uuid.UUID         `db:"event_id" json:"event_id"`
+	HostID        uuid.UUID         `db:"host_id" json:"host_id"`
 	SenderType    MessageSenderType `db:"sender_type" json:"sender_type"`       // system, host, guest
 	SenderID      *uuid.UUID        `db:"sender_id" json:"sender_id,omitempty"` // nil for system messages
 	Message       string            `db:"message" json:"message"`

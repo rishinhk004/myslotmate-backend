@@ -54,6 +54,7 @@ type Event struct {
 	// ── Aggregate stats (denormalized) ──────────────────────────────────────
 	AvgRating     *float64 `db:"avg_rating" json:"avg_rating,omitempty"`
 	TotalBookings int      `db:"total_bookings" json:"total_bookings"`
+	TotalReviews  int      `db:"total_reviews" json:"total_reviews"`
 
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`

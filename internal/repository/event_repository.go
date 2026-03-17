@@ -23,6 +23,9 @@ type EventRepository interface {
 	ListByHostIDForIDs(ctx context.Context, hostID uuid.UUID) ([]uuid.UUID, error)
 	ListPublished(ctx context.Context, limit, offset int) ([]*models.Event, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status models.EventStatus) error
+	IncrementBookingCount(ctx context.Context, eventID uuid.UUID, quantity int) error
+	IncrementReviewCount(ctx context.Context, eventID uuid.UUID) error
+	UpdateAverageRating(ctx context.Context, eventID uuid.UUID, avgRating float64) error
 }
 
 type postgresEventRepository struct {
@@ -39,7 +42,7 @@ var eventColumns = `id, host_id,
 	is_online, location, location_lat, location_lng, duration_minutes, min_group_size, max_group_size, capacity,
 	price_cents, is_free, time, end_time, is_recurring, recurrence_rule,
 	cancellation_policy, status, published_at, paused_at,
-	ai_suggestion, avg_rating, total_bookings,
+	ai_suggestion, avg_rating, total_bookings, total_reviews,
 	created_at, updated_at`
 
 func scanEvent(row interface {
@@ -53,7 +56,7 @@ func scanEvent(row interface {
 		&e.IsOnline, &e.Location, &e.LocationLat, &e.LocationLng, &e.DurationMinutes, &e.MinGroupSize, &e.MaxGroupSize, &e.Capacity,
 		&e.PriceCents, &e.IsFree, &e.Time, &e.EndTime, &e.IsRecurring, &e.RecurrenceRule,
 		&e.CancellationPolicy, &e.Status, &e.PublishedAt, &e.PausedAt,
-		&e.AISuggestion, &e.AvgRating, &e.TotalBookings,
+		&e.AISuggestion, &e.AvgRating, &e.TotalBookings, &e.TotalReviews,
 		&e.CreatedAt, &e.UpdatedAt,
 	)
 	if err != nil {
@@ -138,6 +141,7 @@ func (r *postgresEventRepository) GetByID(ctx context.Context, id uuid.UUID) (*m
 
 func (r *postgresEventRepository) ListByHostID(ctx context.Context, hostID uuid.UUID) ([]*models.Event, error) {
 	query := `SELECT ` + eventColumns + ` FROM events WHERE host_id = $1 ORDER BY created_at DESC`
+	fmt.Printf("[EVENT_REPO] ListByHostID: hostID=%s\n", hostID)
 	return r.scanEvents(ctx, query, hostID)
 }
 
@@ -220,6 +224,7 @@ func (r *postgresEventRepository) ListPublished(ctx context.Context, limit, offs
 func (r *postgresEventRepository) scanEvents(ctx context.Context, query string, args ...interface{}) ([]*models.Event, error) {
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
+		fmt.Printf("[EVENT_REPO] scanEvents ERROR: %v\n", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -234,11 +239,14 @@ func (r *postgresEventRepository) scanEvents(ctx context.Context, query string, 
 			&e.IsOnline, &e.Location, &e.LocationLat, &e.LocationLng, &e.DurationMinutes, &e.MinGroupSize, &e.MaxGroupSize, &e.Capacity,
 			&e.PriceCents, &e.IsFree, &e.Time, &e.EndTime, &e.IsRecurring, &e.RecurrenceRule,
 			&e.CancellationPolicy, &e.Status, &e.PublishedAt, &e.PausedAt,
-			&e.AISuggestion, &e.AvgRating, &e.TotalBookings,
+			&e.AISuggestion, &e.AvgRating, &e.TotalBookings, &e.TotalReviews,
 			&e.CreatedAt, &e.UpdatedAt,
 		); err != nil {
+			fmt.Printf("[EVENT_REPO] scanEvents Scan ERROR: %v\n", err)
 			return nil, err
 		}
+		fmt.Printf("[EVENT_REPO] scanEvents: Found event - id=%s, title=%s, hostID=%s, status=%v\n",
+			e.ID, e.Title, e.HostID, e.Status)
 		normalizedMood, err := models.NormalizeEventMood(e.Mood)
 		if err != nil {
 			return nil, err
@@ -246,5 +254,27 @@ func (r *postgresEventRepository) scanEvents(ctx context.Context, query string, 
 		e.Mood = normalizedMood
 		events = append(events, e)
 	}
+	fmt.Printf("[EVENT_REPO] scanEvents: Total events found: %d\n", len(events))
 	return events, nil
+}
+
+// IncrementBookingCount atomically increments the total_bookings counter for an event.
+func (r *postgresEventRepository) IncrementBookingCount(ctx context.Context, eventID uuid.UUID, quantity int) error {
+	query := `UPDATE events SET total_bookings = total_bookings + $1 WHERE id = $2`
+	_, err := r.db.ExecContext(ctx, query, quantity, eventID)
+	return err
+}
+
+// IncrementReviewCount atomically increments the total_reviews counter for an event.
+func (r *postgresEventRepository) IncrementReviewCount(ctx context.Context, eventID uuid.UUID) error {
+	query := `UPDATE events SET total_reviews = total_reviews + 1 WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, eventID)
+	return err
+}
+
+// UpdateAverageRating updates the average rating for an event.
+func (r *postgresEventRepository) UpdateAverageRating(ctx context.Context, eventID uuid.UUID, avgRating float64) error {
+	query := `UPDATE events SET avg_rating = $1, updated_at = now() WHERE id = $2`
+	_, err := r.db.ExecContext(ctx, query, avgRating, eventID)
+	return err
 }

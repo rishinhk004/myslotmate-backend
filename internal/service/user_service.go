@@ -39,6 +39,7 @@ type SignUpRequest struct {
 	Email     string
 	Name      string
 	PhnNumber string
+	AvatarURL *string
 }
 
 type UserProfileUpdateRequest struct {
@@ -174,6 +175,7 @@ func (s *userService) SignUp(ctx context.Context, req SignUpRequest) (*models.Us
 		Name:       req.Name,
 		Email:      req.Email,
 		PhnNumber:  req.PhnNumber,
+		AvatarURL:  req.AvatarURL,
 		IsVerified: false,
 		CreatedAt:  time.Now(),
 		UpdatedAt:  time.Now(),

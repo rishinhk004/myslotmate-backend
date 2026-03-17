@@ -76,11 +76,13 @@ type HostProfileUpdateRequest struct {
 
 // HostDashboardOverview powers the Host Dashboard overview screen.
 type HostDashboardOverview struct {
-	UpcomingToday   int     `json:"upcoming_today"`
-	MonthlyBookings int     `json:"monthly_bookings"`
+	TotalEvents     int     `json:"total_events"`
+	TotalBookings   int     `json:"total_bookings"`
 	TotalEarnings   int64   `json:"total_earnings_cents"`
 	AvgRating       float64 `json:"avg_rating"`
 	TotalReviews    int     `json:"total_reviews"`
+	UpcomingToday   int     `json:"upcoming_today"`
+	MonthlyBookings int     `json:"monthly_bookings"`
 }
 
 // SocialConnectRequest maps to social media connect/url-submit.
@@ -312,22 +314,47 @@ func (s *hostService) UpdateProfile(ctx context.Context, hostID uuid.UUID, req H
 }
 
 func (s *hostService) GetDashboardOverview(ctx context.Context, hostID uuid.UUID) (*HostDashboardOverview, error) {
+	fmt.Printf("[DASHBOARD] GetDashboardOverview: hostID=%s\n", hostID)
+
 	host, err := s.hostRepo.GetByID(ctx, hostID)
 	if err != nil {
+		fmt.Printf("[DASHBOARD] GetDashboardOverview: host fetch error: %v\n", err)
 		return nil, err
 	}
 	if host == nil {
+		fmt.Printf("[DASHBOARD] GetDashboardOverview: host not found\n")
 		return nil, errors.New("host not found")
 	}
+	fmt.Printf("[DASHBOARD] GetDashboardOverview: host found - %s %s\n", host.FirstName, host.LastName)
+
+	// Get all events for this host
+	events, err := s.eventRepo.ListByHostID(ctx, hostID)
+	if err != nil {
+		fmt.Printf("[DASHBOARD] GetDashboardOverview: events fetch error: %v\n", err)
+		return nil, err
+	}
+	fmt.Printf("[DASHBOARD] GetDashboardOverview: found %d events\n", len(events))
+
+	// Calculate total bookings by summing all event.total_bookings
+	totalBookings := 0
+	for i, evt := range events {
+		fmt.Printf("[DASHBOARD]   Event[%d]: id=%s, title=%s, total_bookings=%d\n",
+			i, evt.ID, evt.Title, evt.TotalBookings)
+		totalBookings += evt.TotalBookings
+	}
+	fmt.Printf("[DASHBOARD] GetDashboardOverview: total bookings aggregated = %d\n", totalBookings)
 
 	// Earnings
 	earnings, err := s.payoutRepo.GetHostEarnings(ctx, hostID)
 	if err != nil {
+		fmt.Printf("[DASHBOARD] GetDashboardOverview: earnings fetch error: %v\n", err)
 		return nil, err
 	}
 
 	overview := &HostDashboardOverview{
-		TotalReviews: host.TotalReviews,
+		TotalEvents:   len(events),
+		TotalBookings: totalBookings,
+		TotalReviews:  host.TotalReviews,
 	}
 	if host.AvgRating != nil {
 		overview.AvgRating = *host.AvgRating
@@ -336,6 +363,8 @@ func (s *hostService) GetDashboardOverview(ctx context.Context, hostID uuid.UUID
 		overview.TotalEarnings = earnings.TotalEarningsCents
 	}
 
+	fmt.Printf("[DASHBOARD] GetDashboardOverview: returning overview - events=%d, bookings=%d\n",
+		overview.TotalEvents, overview.TotalBookings)
 	return overview, nil
 }
 

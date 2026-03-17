@@ -24,6 +24,7 @@ func (c *ReviewController) RegisterRoutes(r chi.Router) {
 		r.Get("/event/{eventID}", c.GetEventReviews)
 		r.Get("/event/{eventID}/rating", c.GetAverageRating)
 		r.Get("/host/{hostID}", c.GetHostReviews)
+		r.Post("/{reviewID}/reply", c.AddReply)
 	})
 }
 
@@ -109,4 +110,30 @@ func (c *ReviewController) GetHostReviews(w http.ResponseWriter, r *http.Request
 	}
 
 	RespondSuccess(w, http.StatusOK, reviews)
+}
+
+type AddReplyRequestBody struct {
+	Reply string `json:"reply"`
+}
+
+func (c *ReviewController) AddReply(w http.ResponseWriter, r *http.Request) {
+	reviewID, err := uuid.Parse(chi.URLParam(r, "reviewID"))
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid review ID")
+		return
+	}
+
+	var req AddReplyRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	err = c.reviewService.AddReply(r.Context(), reviewID, req.Reply)
+	if err != nil {
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	RespondSuccess(w, http.StatusOK, map[string]string{"message": "Reply added successfully"})
 }

@@ -15,6 +15,7 @@ type ReviewRepository interface {
 	GetAverageRating(ctx context.Context, eventID uuid.UUID) (float64, int, error)
 	ListByEventIDs(ctx context.Context, eventIDs []uuid.UUID) ([]*models.Review, error)
 	CountPendingReviewsByEventIDs(ctx context.Context, eventIDs []uuid.UUID, confirmedBookingCount int) (int, error)
+	AddReply(ctx context.Context, reviewID uuid.UUID, reply string) error
 }
 
 type postgresReviewRepository struct {
@@ -126,4 +127,11 @@ func (r *postgresReviewRepository) CountPendingReviewsByEventIDs(ctx context.Con
 		pending = 0
 	}
 	return pending, nil
+}
+
+// AddReply adds a reply to a review's reply array
+func (r *postgresReviewRepository) AddReply(ctx context.Context, reviewID uuid.UUID, reply string) error {
+	query := `UPDATE reviews SET reply = array_append(reply, $1), updated_at = now() WHERE id = $2`
+	_, err := r.db.ExecContext(ctx, query, reply, reviewID)
+	return err
 }

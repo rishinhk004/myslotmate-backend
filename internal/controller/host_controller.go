@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"myslotmate-backend/internal/service"
@@ -87,32 +88,44 @@ type HostProfileUpdateRequestBody struct {
 
 func (c *HostController) resolveHostIDFromRequest(r *http.Request) (uuid.UUID, int, string) {
 	hostIDStr := r.URL.Query().Get("host_id")
+	fmt.Printf("[RESOLVE_HOST] Query params: host_id=%s\n", hostIDStr)
+
 	if hostIDStr != "" {
 		hostID, err := uuid.Parse(hostIDStr)
 		if err != nil {
+			fmt.Printf("[RESOLVE_HOST] Invalid host_id: %v\n", err)
 			return uuid.Nil, http.StatusBadRequest, "Invalid host_id"
 		}
+		fmt.Printf("[RESOLVE_HOST] Resolved via host_id: %s\n", hostID)
 		return hostID, 0, ""
 	}
 
 	userIDStr := r.URL.Query().Get("user_id")
+	fmt.Printf("[RESOLVE_HOST] user_id=%s\n", userIDStr)
+
 	if userIDStr == "" {
+		fmt.Printf("[RESOLVE_HOST] ERROR: Missing both host_id and user_id\n")
 		return uuid.Nil, http.StatusBadRequest, "Missing host_id or user_id"
 	}
 
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
+		fmt.Printf("[RESOLVE_HOST] ERROR: Invalid user_id: %v\n", err)
 		return uuid.Nil, http.StatusBadRequest, "Invalid user_id"
 	}
 
+	fmt.Printf("[RESOLVE_HOST] Looking up host for user_id: %s\n", userID)
 	host, err := c.hostService.GetHostByUserID(r.Context(), userID)
 	if err != nil {
+		fmt.Printf("[RESOLVE_HOST] ERROR: GetHostByUserID error: %v\n", err)
 		return uuid.Nil, http.StatusInternalServerError, err.Error()
 	}
 	if host == nil {
+		fmt.Printf("[RESOLVE_HOST] ERROR: No host profile found for user_id: %s\n", userID)
 		return uuid.Nil, http.StatusNotFound, "Host profile not found"
 	}
 
+	fmt.Printf("[RESOLVE_HOST] Resolved via user_id: host_id=%s (user_id=%s)\n", host.ID, userID)
 	return host.ID, 0, ""
 }
 
@@ -330,14 +343,19 @@ func (c *HostController) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *HostController) GetDashboardOverview(w http.ResponseWriter, r *http.Request) {
+	fmt.Printf("[DASHBOARD_CTRL] GetDashboardOverview called\n")
+
 	hostID, statusCode, message := c.resolveHostIDFromRequest(r)
 	if statusCode != 0 {
+		fmt.Printf("[DASHBOARD_CTRL] Resolution error: %s\n", message)
 		RespondError(w, statusCode, message)
 		return
 	}
 
+	fmt.Printf("[DASHBOARD_CTRL] Calling hostService.GetDashboardOverview with hostID: %s\n", hostID)
 	overview, err := c.hostService.GetDashboardOverview(r.Context(), hostID)
 	if err != nil {
+		fmt.Printf("[DASHBOARD_CTRL] ERROR: %v\n", err)
 		if err.Error() == "host not found" {
 			RespondError(w, http.StatusNotFound, "Host profile not found")
 			return
@@ -346,6 +364,8 @@ func (c *HostController) GetDashboardOverview(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	fmt.Printf("[DASHBOARD_CTRL] SUCCESS: Overview - Events: %d, Bookings: %d\n",
+		overview.TotalEvents, overview.TotalBookings)
 	RespondSuccess(w, http.StatusOK, overview)
 }
 
