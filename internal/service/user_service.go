@@ -32,6 +32,7 @@ type UserService interface {
 	InitiateTopUp(ctx context.Context, userID uuid.UUID, req TopUpRequest) (*TopUpOrderResponse, error)
 	VerifyTopUp(ctx context.Context, userID uuid.UUID, req VerifyTopUpRequest) (*WalletBalanceResponse, error)
 	CreditWalletFromWebhook(ctx context.Context, orderID string, razorpayPaymentID string) error
+	GetByAuthUID(ctx context.Context, authUID string) (*models.User, error)
 }
 
 type SignUpRequest struct {
@@ -435,4 +436,16 @@ func (s *userService) CreditWalletFromWebhook(ctx context.Context, orderID strin
 	_ = s.paymentRepo.Update(ctx, pmtRecord)
 
 	return nil
+}
+
+// GetByAuthUID retrieves a user by their Firebase authentication UID
+func (s *userService) GetByAuthUID(ctx context.Context, authUID string) (*models.User, error) {
+	user, err := s.repo.GetByAuthUID(ctx, authUID)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		return nil, errors.New("user not found")
+	}
+	return user, nil
 }

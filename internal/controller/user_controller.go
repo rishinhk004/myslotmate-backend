@@ -29,6 +29,7 @@ func (c *UserController) RegisterRoutes(r chi.Router) {
 	r.Post("/auth/verify-aadhar/complete", c.CompleteAadharVerification)
 	r.Route("/users", func(r chi.Router) {
 		r.Get("/me", c.GetProfile)
+		r.Get("/by-firebase/{firebaseID}", c.GetUserByFirebaseID)
 		r.Put("/me", c.UpdateProfile)
 		r.Get("/{userID}", c.GetUserByID)
 		r.Get("/wallet/balance", c.GetWalletBalance)
@@ -402,4 +403,24 @@ func (c *UserController) VerifyTopUp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	RespondSuccess(w, http.StatusOK, result)
+}
+
+func (c *UserController) GetUserByFirebaseID(w http.ResponseWriter, r *http.Request) {
+	firebaseID := chi.URLParam(r, "firebaseID")
+	if firebaseID == "" {
+		RespondError(w, http.StatusBadRequest, "Missing firebase ID")
+		return
+	}
+
+	user, err := c.userService.GetByAuthUID(r.Context(), firebaseID)
+	if err != nil {
+		if err.Error() == "user not found" {
+			RespondError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	RespondSuccess(w, http.StatusOK, user)
 }
