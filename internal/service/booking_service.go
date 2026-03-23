@@ -189,7 +189,13 @@ func (s *bookingService) CreateBooking(ctx context.Context, userID uuid.UUID, re
 		}
 	}
 
-	// 11. Publish event
+	// 11. Credit platform wallet with service fee
+	platformAccount, err := s.accountRepo.GetByOwner(ctx, models.AccountOwnerPlatform, uuid.Nil)
+	if err == nil && platformAccount != nil {
+		_ = s.accountRepo.Credit(ctx, platformAccount.ID, serviceFee)
+	}
+
+	// 12. Publish event
 	s.dispatcher.Publish(event.BookingCreated, newBooking)
 
 	return newBooking, nil

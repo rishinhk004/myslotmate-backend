@@ -5,12 +5,13 @@ import (
 	"strings"
 )
 
-// AccountOwnerType is the owner of an account (user or host).
+// AccountOwnerType is the owner of an account (user, host, or platform).
 type AccountOwnerType string
 
 const (
-	AccountOwnerUser AccountOwnerType = "user"
-	AccountOwnerHost AccountOwnerType = "host"
+	AccountOwnerUser     AccountOwnerType = "user"
+	AccountOwnerHost     AccountOwnerType = "host"
+	AccountOwnerPlatform AccountOwnerType = "platform"
 )
 
 // BookingStatus represents the lifecycle of a booking.

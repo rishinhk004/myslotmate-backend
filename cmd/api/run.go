@@ -12,6 +12,7 @@ import (
 	awscfg "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/google/uuid"
 
 	"myslotmate-backend/internal/config"
 	"myslotmate-backend/internal/controller"
@@ -24,6 +25,7 @@ import (
 	"myslotmate-backend/internal/lib/realtime"
 	"myslotmate-backend/internal/lib/storage"
 	"myslotmate-backend/internal/lib/worker"
+	"myslotmate-backend/internal/models"
 	"myslotmate-backend/internal/repository"
 	"myslotmate-backend/internal/server"
 	"myslotmate-backend/internal/service"
@@ -110,6 +112,11 @@ func main() {
 	supportRepo := repository.NewSupportRepository(dbConn)
 	savedExpRepo := repository.NewSavedExperienceRepository(dbConn)
 
+	// Ensure platform account exists for fee tracking
+	if err := ensurePlatformAccount(ctx, accountRepo); err != nil {
+		log.Printf("Warning: failed to ensure platform account exists: %v", err)
+	}
+
 	// Strategy Pattern: Identity Provider
 	aadharProvider := identity.NewSetuAadharProvider(identity.SetuConfig{
 		BaseURL:           cfg.Setu.BaseURL,
@@ -174,7 +181,7 @@ func main() {
 	webhookController := controller.NewWebhookController(payoutService, userService, payoutProvider, paymentProvider)
 	supportController := controller.NewSupportController(supportService, uploadService)
 	uploadController := controller.NewUploadController(uploadService)
-	adminController := controller.NewAdminController(hostService, fbApp.Auth, cfg.AdminEmail)
+	adminController := controller.NewAdminController(hostService, payoutService, fbApp.Auth, cfg.AdminEmail)
 
 	router := server.NewRouter(
 		fbApp,
@@ -252,4 +259,37 @@ func keepAlive(ctx context.Context, url string) {
 			log.Printf("keep-alive ping: %s", resp.Status)
 		}
 	}
+}
+
+// ensurePlatformAccount creates the platform account if it doesn't exist.
+// This account tracks all platform fees collected from bookings.
+func ensurePlatformAccount(ctx context.Context, accountRepo repository.AccountRepository) error {
+	// Check if platform account exists
+	platformAccount, err := accountRepo.GetByOwner(ctx, models.AccountOwnerPlatform, uuid.Nil)
+	if err != nil {
+		return err
+	}
+
+	// If it already exists, we're done
+	if platformAccount != nil {
+		log.Println("Platform account already exists")
+		return nil
+	}
+
+	// Create platform account
+	account := &models.Account{
+		ID:           uuid.New(),
+		OwnerType:    models.AccountOwnerPlatform,
+		OwnerID:      uuid.Nil,
+		BalanceCents: 0,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	if err := accountRepo.Create(ctx, account); err != nil {
+		return err
+	}
+
+	log.Printf("✓ Platform account created: %s", account.ID)
+	return nil
 }

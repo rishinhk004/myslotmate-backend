@@ -16,20 +16,32 @@ import (
 
 // PayoutService handles payout methods, withdrawal requests, earnings queries, and webhooks.
 type PayoutService interface {
-	// Payout Methods
+	// Payout Methods (Host)
 	AddPayoutMethod(ctx context.Context, hostID uuid.UUID, req AddPayoutMethodRequest) (*models.PayoutMethod, error)
 	ListPayoutMethods(ctx context.Context, hostID uuid.UUID) ([]*models.PayoutMethod, error)
 	SetPrimaryMethod(ctx context.Context, hostID uuid.UUID, methodID uuid.UUID) error
 	DeletePayoutMethod(ctx context.Context, hostID uuid.UUID, methodID uuid.UUID) error
 
-	// Withdrawals
+	// Withdrawals (Host)
 	RequestWithdrawal(ctx context.Context, hostID uuid.UUID, req WithdrawalRequest) (*models.Payment, error)
 
-	// Earnings Dashboard
+	// Earnings Dashboard (Host)
 	GetEarningsSummary(ctx context.Context, hostID uuid.UUID) (*EarningsSummary, error)
 
-	// Payment History
+	// Payment History (Host)
 	GetPayoutHistory(ctx context.Context, hostID uuid.UUID, limit, offset int) ([]*models.Payment, error)
+
+	// Admin Platform Payout Methods
+	AddAdminPayoutMethod(ctx context.Context, req AddPayoutMethodRequest) (*models.PayoutMethod, error)
+	ListAdminPayoutMethods(ctx context.Context) ([]*models.PayoutMethod, error)
+	SetAdminPrimaryMethod(ctx context.Context, methodID uuid.UUID) error
+	DeleteAdminPayoutMethod(ctx context.Context, methodID uuid.UUID) error
+
+	// Admin Platform Withdrawal
+	RequestAdminWithdrawal(ctx context.Context, req WithdrawalRequest) (*models.Payment, error)
+
+	// Admin Platform Balance
+	GetPlatformBalance(ctx context.Context) (*PlatformBalanceInfo, error)
 
 	// Webhook
 	HandlePayoutWebhook(ctx context.Context, paymentID uuid.UUID, status string, providerError string) error
@@ -59,6 +71,12 @@ type EarningsSummary struct {
 	PendingClearanceCents int64                     `json:"pending_clearance_cents"`
 	EstimatedClearanceAt  *time.Time                `json:"estimated_clearance_at,omitempty"`
 	PlatformFee           *models.PlatformFeeConfig `json:"platform_fee"`
+}
+
+type PlatformBalanceInfo struct {
+	AccountID            uuid.UUID `json:"account_id"`
+	BalanceCents         int64     `json:"balance_cents"`
+	CollectedFromBooking int64     `json:"collected_from_bookings"`
 }
 
 // ── Implementation ──────────────────────────────────────────────────────────
@@ -549,4 +567,249 @@ func (s *payoutService) HandlePayoutWebhook(ctx context.Context, paymentID uuid.
 		fmt.Printf("[PAYOUT] Webhook: unknown payout status: %s\n", status)
 		return fmt.Errorf("unknown payout status: %s", status)
 	}
+}
+
+// ── Admin Platform Payout Management ────────────────────────────────────────
+
+func (s *payoutService) AddAdminPayoutMethod(ctx context.Context, req AddPayoutMethodRequest) (*models.PayoutMethod, error) {
+	fmt.Printf("[PAYOUT] AddAdminPayoutMethod: type=%s\n", req.Type)
+
+	// Mask + encrypt account number for bank type
+	var lastFour *string
+	var encrypted *string
+	if req.Type == models.PayoutMethodBank && req.AccountNumber != nil {
+		num := *req.AccountNumber
+		if len(num) >= 4 {
+			l4 := num[len(num)-4:]
+			lastFour = &l4
+		}
+		encrypted = req.AccountNumber
+	}
+
+	// Check if admin already has a payout method
+	existing, err := s.payoutRepo.ListAdminPayoutMethods(ctx)
+	if err != nil {
+		return nil, err
+	}
+	isPrimary := len(existing) == 0
+
+	pm := &models.PayoutMethod{
+		ID:                     uuid.New(),
+		HostID:                 uuid.Nil, // Platform account
+		Type:                   req.Type,
+		BankName:               req.BankName,
+		AccountType:            req.AccountType,
+		LastFourDigits:         lastFour,
+		AccountNumberEncrypted: encrypted,
+		IFSC:                   req.IFSC,
+		BeneficiaryName:        req.BeneficiaryName,
+		UPIID:                  req.UPIID,
+		IsVerified:             true,
+		IsPrimary:              isPrimary,
+		CreatedAt:              time.Now(),
+		UpdatedAt:              time.Now(),
+	}
+
+	if err := s.payoutRepo.CreatePayoutMethod(ctx, pm); err != nil {
+		return nil, err
+	}
+
+	fmt.Printf("[PAYOUT] AddAdminPayoutMethod: created method %s\n", pm.ID)
+	return pm, nil
+}
+
+func (s *payoutService) ListAdminPayoutMethods(ctx context.Context) ([]*models.PayoutMethod, error) {
+	fmt.Printf("[PAYOUT] ListAdminPayoutMethods\n")
+	methods, err := s.payoutRepo.ListAdminPayoutMethods(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return methods, nil
+}
+
+func (s *payoutService) SetAdminPrimaryMethod(ctx context.Context, methodID uuid.UUID) error {
+	fmt.Printf("[PAYOUT] SetAdminPrimaryMethod: methodID=%s\n", methodID)
+
+	pm, err := s.payoutRepo.GetPayoutMethodByID(ctx, methodID)
+	if err != nil {
+		return err
+	}
+	if pm == nil {
+		return errors.New("payout method not found")
+	}
+	if pm.HostID != uuid.Nil {
+		return errors.New("method does not belong to platform")
+	}
+
+	return s.payoutRepo.SetAdminPrimary(ctx, methodID)
+}
+
+func (s *payoutService) DeleteAdminPayoutMethod(ctx context.Context, methodID uuid.UUID) error {
+	fmt.Printf("[PAYOUT] DeleteAdminPayoutMethod: methodID=%s\n", methodID)
+
+	pm, err := s.payoutRepo.GetPayoutMethodByID(ctx, methodID)
+	if err != nil {
+		return err
+	}
+	if pm == nil {
+		return errors.New("payout method not found")
+	}
+	if pm.HostID != uuid.Nil {
+		return errors.New("method does not belong to platform")
+	}
+	if pm.IsPrimary {
+		return errors.New("cannot delete the primary payout method")
+	}
+
+	return s.payoutRepo.DeletePayoutMethod(ctx, methodID)
+}
+
+func (s *payoutService) RequestAdminWithdrawal(ctx context.Context, req WithdrawalRequest) (*models.Payment, error) {
+	fmt.Printf("[PAYOUT] RequestAdminWithdrawal: amount=%d\n", req.AmountCents)
+
+	if req.AmountCents <= 0 {
+		return nil, errors.New("withdrawal amount must be positive")
+	}
+
+	// 1. Check idempotency
+	if req.IdempotencyKey != "" {
+		existing, err := s.paymentRepo.GetByIdempotencyKey(ctx, req.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil {
+			return existing, nil
+		}
+	}
+
+	// 2. Get platform account
+	account, err := s.accountRepo.GetByOwner(ctx, models.AccountOwnerPlatform, uuid.Nil)
+	if err != nil {
+		return nil, err
+	}
+	if account == nil {
+		return nil, errors.New("platform account not found")
+	}
+
+	// 3. Debit wallet
+	if err := s.accountRepo.Debit(ctx, account.ID, req.AmountCents); err != nil {
+		if errors.Is(err, repository.ErrInsufficientBalance) {
+			return nil, errors.New("insufficient platform balance")
+		}
+		return nil, err
+	}
+
+	// 4. Get payout method
+	var payoutMethod *models.PayoutMethod
+	if req.PayoutMethodID != nil {
+		payoutMethod, err = s.payoutRepo.GetPayoutMethodByID(ctx, *req.PayoutMethodID)
+		if err != nil {
+			_ = s.accountRepo.Credit(ctx, account.ID, req.AmountCents)
+			return nil, err
+		}
+	} else {
+		payoutMethod, err = s.payoutRepo.GetAdminPrimaryPayoutMethod(ctx)
+		if err != nil {
+			_ = s.accountRepo.Credit(ctx, account.ID, req.AmountCents)
+			return nil, err
+		}
+	}
+
+	if payoutMethod == nil {
+		_ = s.accountRepo.Credit(ctx, account.ID, req.AmountCents)
+		return nil, errors.New("no payout method found")
+	}
+
+	// 5. Create payment record
+	idempotencyKey := req.IdempotencyKey
+	if idempotencyKey == "" {
+		idempotencyKey = fmt.Sprintf("admin_payout_%d", time.Now().UnixNano())
+	}
+	displayRef := fmt.Sprintf("ADM-%05d", time.Now().UnixMilli()%100000)
+
+	payment := &models.Payment{
+		ID:               uuid.New(),
+		IdempotencyKey:   idempotencyKey,
+		AccountID:        account.ID,
+		Type:             models.PaymentTypePayout,
+		AmountCents:      req.AmountCents,
+		Status:           models.PaymentStatusPending,
+		PayoutMethodID:   &payoutMethod.ID,
+		DisplayReference: &displayRef,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+	}
+
+	if err := s.paymentRepo.Create(ctx, payment); err != nil {
+		_ = s.accountRepo.Credit(ctx, account.ID, req.AmountCents)
+		return nil, err
+	}
+
+	// 6. Call Cashfree
+	transferReq := payout.TransferRequest{
+		PaymentID:      payment.ID,
+		AmountCents:    req.AmountCents,
+		MethodType:     string(payoutMethod.Type),
+		IdempotencyKey: idempotencyKey,
+	}
+	if payoutMethod.BeneficiaryName != nil {
+		transferReq.BeneficiaryName = *payoutMethod.BeneficiaryName
+	}
+	if payoutMethod.Type == models.PayoutMethodBank {
+		if payoutMethod.AccountNumberEncrypted != nil {
+			transferReq.AccountNumber = *payoutMethod.AccountNumberEncrypted
+		}
+		if payoutMethod.IFSC != nil {
+			transferReq.IFSC = *payoutMethod.IFSC
+		}
+		if payoutMethod.BankName != nil {
+			transferReq.BankName = *payoutMethod.BankName
+		}
+	} else {
+		if payoutMethod.UPIID != nil {
+			transferReq.UPIID = *payoutMethod.UPIID
+		}
+	}
+
+	_ = s.paymentRepo.UpdateStatus(ctx, payment.ID, models.PaymentStatusProcessing, nil)
+
+	resp, err := s.provider.InitiateTransfer(ctx, transferReq)
+	if err != nil {
+		errMsg := err.Error()
+		_ = s.paymentRepo.IncrementRetry(ctx, payment.ID, errMsg)
+		_ = s.accountRepo.Credit(ctx, account.ID, req.AmountCents)
+		return payment, nil
+	}
+
+	if resp.Status == "completed" {
+		_ = s.paymentRepo.UpdateStatus(ctx, payment.ID, models.PaymentStatusCompleted, nil)
+		payment.Status = models.PaymentStatusCompleted
+	} else if resp.Status == "processing" {
+		payment.Status = models.PaymentStatusProcessing
+	} else if resp.Status == "failed" {
+		_ = s.paymentRepo.UpdateStatus(ctx, payment.ID, models.PaymentStatusFailed, &resp.Error)
+		_ = s.accountRepo.Credit(ctx, account.ID, req.AmountCents)
+		payment.Status = models.PaymentStatusFailed
+	}
+
+	fmt.Printf("[PAYOUT] RequestAdminWithdrawal: payment=%s, status=%s\n", payment.ID, payment.Status)
+	return payment, nil
+}
+
+func (s *payoutService) GetPlatformBalance(ctx context.Context) (*PlatformBalanceInfo, error) {
+	fmt.Printf("[PAYOUT] GetPlatformBalance\n")
+
+	account, err := s.accountRepo.GetByOwner(ctx, models.AccountOwnerPlatform, uuid.Nil)
+	if err != nil {
+		return nil, err
+	}
+	if account == nil {
+		return nil, errors.New("platform account not found")
+	}
+
+	return &PlatformBalanceInfo{
+		AccountID:            account.ID,
+		BalanceCents:         account.BalanceCents,
+		CollectedFromBooking: account.BalanceCents,
+	}, nil
 }

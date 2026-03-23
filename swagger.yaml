@@ -808,6 +808,199 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /admin/platform/balance:
+    get:
+      tags: [Admin]
+      summary: Get platform account balance and fee collection
+      description: |
+        Returns the total platform fees collected from all bookings.
+        The platform automatically collects 15% of every booking amount.
+      operationId: getPlatformBalance
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Platform account balance and statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_PlatformBalance"
+        "401":
+          description: Unauthorized — missing or invalid token
+        "403":
+          description: Forbidden — caller is not admin
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /admin/platform/payout-methods:
+    post:
+      tags: [Admin]
+      summary: Add a payout method for platform account
+      operationId: addAdminPayoutMethod
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type:
+                  type: string
+                  enum: [bank, upi]
+                bank_name:
+                  type: string
+                account_type:
+                  type: string
+                account_number:
+                  type: string
+                ifsc:
+                  type: string
+                beneficiary_name:
+                  type: string
+                upi_id:
+                  type: string
+      responses:
+        "201":
+          description: Payout method created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_PayoutMethod"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Unauthorized — missing or invalid token
+        "403":
+          description: Forbidden — caller is not admin
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    get:
+      tags: [Admin]
+      summary: List all payout methods for platform account
+      operationId: listAdminPayoutMethods
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of payout methods
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_PayoutMethodList"
+        "401":
+          description: Unauthorized — missing or invalid token
+        "403":
+          description: Forbidden — caller is not admin
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /admin/platform/payout-methods/{methodID}/primary:
+    put:
+      tags: [Admin]
+      summary: Set a payout method as primary for platform
+      operationId: setAdminPrimaryMethod
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: methodID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Primary method updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Message"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Unauthorized — missing or invalid token
+        "403":
+          description: Forbidden — caller is not admin
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /admin/platform/payout-methods/{methodID}:
+    delete:
+      tags: [Admin]
+      summary: Delete a payout method from platform account
+      operationId: deleteAdminPayoutMethod
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: methodID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Method deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Message"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Unauthorized — missing or invalid token
+        "403":
+          description: Forbidden — caller is not admin
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /admin/platform/withdraw:
+    post:
+      tags: [Admin]
+      summary: Withdraw platform fees to admin's bank account or UPI
+      operationId: requestAdminWithdrawal
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount_cents]
+              properties:
+                amount_cents:
+                  type: integer
+                  format: int64
+                  description: Amount to withdraw in paise (INR cents)
+                  example: 50000
+                payout_method_id:
+                  type: string
+                  format: uuid
+                  nullable: true
+                  description: If not provided, uses primary method
+                idempotency_key:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Withdrawal request processed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Payment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Unauthorized — missing or invalid token
+        "403":
+          description: Forbidden — caller is not admin
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   # ── Events ──────────────────────────────────
   /events/:
     get:
@@ -2168,6 +2361,24 @@ components:
           format: int64
           example: 150000
 
+    PlatformBalance:
+      type: object
+      description: Platform account containing all collected fees from bookings
+      properties:
+        account_id:
+          type: string
+          format: uuid
+        balance_cents:
+          type: integer
+          format: int64
+          description: Total collected fees in paise (INR cents)
+          example: 45000
+        collected_from_bookings:
+          type: integer
+          format: int64
+          description: Total amount collected from all bookings (15% of each)
+          example: 45000
+
     HostApplicationRequest:
       type: object
       required: [user_id, first_name, last_name, city, phn_number]
@@ -3400,6 +3611,15 @@ components:
           example: true
         data:
           $ref: "#/components/schemas/WalletBalance"
+
+    SuccessResponse_PlatformBalance:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/PlatformBalance"
 
     SuccessResponse_HostDashboard:
       type: object

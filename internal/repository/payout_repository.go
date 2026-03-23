@@ -11,13 +11,18 @@ import (
 
 // PayoutRepository provides payout method, host earnings, and platform settings data access.
 type PayoutRepository interface {
-	// Payout Methods
+	// Payout Methods (Host)
 	CreatePayoutMethod(ctx context.Context, pm *models.PayoutMethod) error
 	GetPayoutMethodByID(ctx context.Context, id uuid.UUID) (*models.PayoutMethod, error)
 	ListPayoutMethodsByHostID(ctx context.Context, hostID uuid.UUID) ([]*models.PayoutMethod, error)
 	GetPrimaryPayoutMethod(ctx context.Context, hostID uuid.UUID) (*models.PayoutMethod, error)
 	SetPrimary(ctx context.Context, hostID uuid.UUID, methodID uuid.UUID) error
 	DeletePayoutMethod(ctx context.Context, id uuid.UUID) error
+
+	// Payout Methods (Admin/Platform)
+	ListAdminPayoutMethods(ctx context.Context) ([]*models.PayoutMethod, error)
+	GetAdminPrimaryPayoutMethod(ctx context.Context) (*models.PayoutMethod, error)
+	SetAdminPrimary(ctx context.Context, methodID uuid.UUID) error
 
 	// Host Earnings
 	GetHostEarnings(ctx context.Context, hostID uuid.UUID) (*models.HostEarnings, error)
@@ -149,6 +154,71 @@ func (r *postgresPayoutRepository) SetPrimary(ctx context.Context, hostID uuid.U
 func (r *postgresPayoutRepository) DeletePayoutMethod(ctx context.Context, id uuid.UUID) error {
 	_, err := r.db.ExecContext(ctx, `DELETE FROM payout_methods WHERE id = $1`, id)
 	return err
+}
+
+// ── Admin Payout Methods ────────────────────────────────────────────────────
+
+func (r *postgresPayoutRepository) ListAdminPayoutMethods(ctx context.Context) ([]*models.PayoutMethod, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, host_id, type, bank_name, account_type, last_four_digits, 
+		       account_number_encrypted, ifsc, beneficiary_name, upi_id, 
+		       is_verified, is_primary, created_at, updated_at
+		FROM payout_methods
+		WHERE host_id = '00000000-0000-0000-0000-000000000000'
+		ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var methods []*models.PayoutMethod
+	for rows.Next() {
+		pm := &models.PayoutMethod{}
+		err := rows.Scan(
+			&pm.ID, &pm.HostID, &pm.Type, &pm.BankName, &pm.AccountType,
+			&pm.LastFourDigits, &pm.AccountNumberEncrypted, &pm.IFSC,
+			&pm.BeneficiaryName, &pm.UPIID, &pm.IsVerified, &pm.IsPrimary,
+			&pm.CreatedAt, &pm.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		methods = append(methods, pm)
+	}
+	return methods, rows.Err()
+}
+
+func (r *postgresPayoutRepository) GetAdminPrimaryPayoutMethod(ctx context.Context) (*models.PayoutMethod, error) {
+	return r.GetPrimaryPayoutMethod(ctx, uuid.Nil)
+}
+
+func (r *postgresPayoutRepository) SetAdminPrimary(ctx context.Context, methodID uuid.UUID) error {
+	// Unset all admin methods, then set the chosen one
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
+
+	_, err = tx.ExecContext(ctx, `UPDATE payout_methods SET is_primary = false, updated_at = now() WHERE host_id = '00000000-0000-0000-0000-000000000000'`)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, `UPDATE payout_methods SET is_primary = true, updated_at = now() WHERE id = $1 AND host_id = '00000000-0000-0000-0000-000000000000'`, methodID)
+	if err != nil {
+		return err
+	}
+
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ── Host Earnings ───────────────────────────────────────────────────────────
