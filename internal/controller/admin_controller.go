@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"myslotmate-backend/internal/auth"
+	"myslotmate-backend/internal/models"
 	"myslotmate-backend/internal/service"
 
 	fbauth "firebase.google.com/go/v4/auth"
@@ -148,7 +149,7 @@ func (c *AdminController) AddAdminPayoutMethod(w http.ResponseWriter, r *http.Re
 	}
 
 	req := service.AddPayoutMethodRequest{
-		Type:            methodType,
+		Type:            models.PayoutMethodType(methodType),
 		BankName:        reqBody.BankName,
 		AccountType:     reqBody.AccountType,
 		AccountNumber:   reqBody.AccountNumber,

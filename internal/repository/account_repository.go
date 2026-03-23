@@ -10,6 +10,7 @@ import (
 
 // AccountRepository provides wallet (account) data access.
 type AccountRepository interface {
+	Create(ctx context.Context, account *models.Account) error
 	GetByID(ctx context.Context, id uuid.UUID) (*models.Account, error)
 	GetByOwner(ctx context.Context, ownerType models.AccountOwnerType, ownerID uuid.UUID) (*models.Account, error)
 	Credit(ctx context.Context, accountID uuid.UUID, amountCents int64) error
@@ -95,4 +96,20 @@ func (r *postgresAccountRepository) GetBalance(ctx context.Context, accountID uu
 	query := `SELECT balance_cents FROM accounts WHERE id = $1`
 	err := r.db.QueryRowContext(ctx, query, accountID).Scan(&balance)
 	return balance, err
+}
+
+// Create inserts a new account into the database.
+func (r *postgresAccountRepository) Create(ctx context.Context, account *models.Account) error {
+	query := `INSERT INTO accounts (id, owner_type, owner_id, balance_cents, bank_details, created_at, updated_at) 
+	         VALUES ($1, $2, $3, $4, $5, $6, $7)`
+	_, err := r.db.ExecContext(ctx, query,
+		account.ID,
+		account.OwnerType,
+		account.OwnerID,
+		account.BalanceCents,
+		account.BankDetails,
+		account.CreatedAt,
+		account.UpdatedAt,
+	)
+	return err
 }
