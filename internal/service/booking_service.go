@@ -33,6 +33,7 @@ type bookingService struct {
 	paymentRepo repository.PaymentRepository
 	payoutRepo  repository.PayoutRepository
 	hostRepo    repository.HostRepository
+	ledgerRepo  repository.TransactionLedgerRepository
 	dispatcher  *event.Dispatcher
 }
 
@@ -43,6 +44,7 @@ func NewBookingService(
 	pmr repository.PaymentRepository,
 	pr repository.PayoutRepository,
 	hr repository.HostRepository,
+	lr repository.TransactionLedgerRepository,
 	d *event.Dispatcher,
 ) BookingService {
 	return &bookingService{
@@ -52,20 +54,26 @@ func NewBookingService(
 		paymentRepo: pmr,
 		payoutRepo:  pr,
 		hostRepo:    hr,
+		ledgerRepo:  lr,
 		dispatcher:  d,
 	}
 }
 
 func (s *bookingService) CreateBooking(ctx context.Context, userID uuid.UUID, req BookingCreateRequest) (*models.Booking, error) {
-	// 1. Idempotency check
-	if req.IdempotencyKey != "" {
-		existing, err := s.paymentRepo.GetByIdempotencyKey(ctx, req.IdempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-		if existing != nil && existing.ReferenceID != nil {
-			// Return the existing booking
-			return s.bookingRepo.GetByID(ctx, *existing.ReferenceID)
+	idempotencyKey := req.IdempotencyKey
+	if idempotencyKey == "" {
+		idempotencyKey = fmt.Sprintf("booking_%s_%d", userID, time.Now().UnixNano())
+	}
+
+	// 1. Idempotency check via ledger (prevents duplicate ledger entries)
+	actualLedger, err := s.ledgerRepo.GetByIdempotencyKey(ctx, idempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	if actualLedger != nil {
+		// Already processed this booking, return the original
+		if actualLedger.ReferenceID != nil {
+			return s.bookingRepo.GetByID(ctx, *actualLedger.ReferenceID)
 		}
 	}
 
@@ -78,7 +86,7 @@ func (s *bookingService) CreateBooking(ctx context.Context, userID uuid.UUID, re
 		return nil, errors.New("your account is blocked due to suspicious activity")
 	}
 
-	// 3. Validate event
+	// 3. Validate event exists
 	evt, err := s.eventRepo.GetByID(ctx, req.EventID)
 	if err != nil {
 		return nil, err
@@ -96,19 +104,19 @@ func (s *bookingService) CreateBooking(ctx context.Context, userID uuid.UUID, re
 		return nil, errors.New("event capacity exceeded")
 	}
 
-	// 5. Get platform fee config dynamically from PlatformSettings
+	// 5. Get platform fee config
 	feeConfig, err := s.payoutRepo.GetPlatformFeeConfig(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// Price per ticket — placeholder until Event has a price field
+	// Price calculation
 	var pricePerTicketCents int64 = 1000 // 10.00 currency units
 	totalAmount := pricePerTicketCents * int64(req.Quantity)
-	serviceFee := totalAmount * int64(feeConfig.PlatformPercentage) / 100
-	netEarning := totalAmount - serviceFee
+	platformFee := totalAmount * int64(feeConfig.PlatformPercentage) / 100
+	hostEarning := totalAmount - platformFee
 
-	// 6. Get user account
+	// 6. Get user account (must exist)
 	userAccount, err := s.accountRepo.GetByOwner(ctx, models.AccountOwnerUser, userID)
 	if err != nil {
 		return nil, err
@@ -117,7 +125,7 @@ func (s *bookingService) CreateBooking(ctx context.Context, userID uuid.UUID, re
 		return nil, errors.New("user account not found")
 	}
 
-	// 7. Debit user wallet
+	// 7. Check sufficient balance BEFORE creating ledger
 	if err := s.accountRepo.Debit(ctx, userAccount.ID, totalAmount); err != nil {
 		if errors.Is(err, repository.ErrInsufficientBalance) {
 			return nil, errors.New("insufficient wallet balance; please top up first")
@@ -125,11 +133,108 @@ func (s *bookingService) CreateBooking(ctx context.Context, userID uuid.UUID, re
 		return nil, err
 	}
 
-	// 8. Create booking
-	idempotencyKey := req.IdempotencyKey
-	if idempotencyKey != "" {
-		// store on booking too
+	// ─────────────────────────────────────────────────────────────────────
+	// SWIGGY-STYLE LEDGER FLOW (Immutable Journal)
+	// ─────────────────────────────────────────────────────────────────────
+
+	// 8. Ledger Entry 1: User DEBIT - User pays amount to platform
+	// (This records money flowing from user → platform)
+	userDebitLedger := &models.TransactionLedger{
+		ID:             uuid.New(),
+		AccountID:      userAccount.ID,
+		Type:           models.LedgerTypeBookingCredit, // CREDIT from user's perspective (they paid)
+		AmountCents:    -totalAmount,                   // NEGATIVE = money out
+		ReferenceID:    &req.EventID,
+		ReferenceType:  strPtr("event"),
+		IdempotencyKey: strPtr(idempotencyKey),
+		Description:    strPtr(fmt.Sprintf("Event registration: %d tickets", req.Quantity)),
+		Status:         models.LedgerStatusCompleted,
+		CreatedAt:      time.Now(),
+		CreatedBy:      &userID,
 	}
+	userDebit, err := s.ledgerRepo.Create(ctx, userDebitLedger)
+	if err != nil {
+		// Rollback the account debit
+		_ = s.accountRepo.Credit(ctx, userAccount.ID, totalAmount)
+		return nil, fmt.Errorf("failed to create user debit ledger: %w", err)
+	}
+
+	// 9. Get platform account
+	platformAccount, err := s.accountRepo.GetByOwner(ctx, models.AccountOwnerPlatform, uuid.Nil)
+	if err != nil {
+		// Rollback
+		_ = s.accountRepo.Credit(ctx, userAccount.ID, totalAmount)
+		return nil, fmt.Errorf("platform account not found: %w", err)
+	}
+
+	// 10. Ledger Entry 2: Platform CREDIT - Receives user payment
+	platformCreditLedger := &models.TransactionLedger{
+		ID:            uuid.New(),
+		AccountID:     platformAccount.ID,
+		Type:          models.LedgerTypeBookingCredit,
+		AmountCents:   totalAmount, // POSITIVE = money in
+		ReferenceID:   &userDebit.ID,
+		ReferenceType: strPtr("ledger"),
+		Description:   strPtr("Payment received for event registration"),
+		Status:        models.LedgerStatusCompleted,
+		CreatedAt:     time.Now(),
+	}
+	platformCredit, err := s.ledgerRepo.Create(ctx, platformCreditLedger)
+	if err != nil {
+		_ = s.accountRepo.Credit(ctx, userAccount.ID, totalAmount)
+		return nil, fmt.Errorf("failed to create platform credit ledger: %w", err)
+	}
+
+	// 11. Ledger Entry 3: Platform FEE DEBIT - Platform keeps commission
+	platformFeeDebitLedger := &models.TransactionLedger{
+		ID:            uuid.New(),
+		AccountID:     platformAccount.ID,
+		Type:          models.LedgerTypePlatformFeeCredit,
+		AmountCents:   -platformFee, // NEGATIVE = platform fee reserved
+		ReferenceID:   &req.EventID,
+		ReferenceType: strPtr("event"),
+		Description:   strPtr(fmt.Sprintf("Commission: %d%% of booking", feeConfig.PlatformPercentage)),
+		Status:        models.LedgerStatusCompleted,
+		CreatedAt:     time.Now(),
+	}
+	_, err = s.ledgerRepo.Create(ctx, platformFeeDebitLedger)
+	if err != nil {
+		_ = s.accountRepo.Credit(ctx, userAccount.ID, totalAmount)
+		return nil, fmt.Errorf("failed to create platform fee ledger: %w", err)
+	}
+
+	// 12. Get host account
+	host, err := s.hostRepo.GetByID(ctx, evt.HostID)
+	if err != nil {
+		_ = s.accountRepo.Credit(ctx, userAccount.ID, totalAmount)
+		return nil, fmt.Errorf("host lookup failed: %w", err)
+	}
+
+	hostAccount, err := s.accountRepo.GetByOwner(ctx, models.AccountOwnerHost, host.ID)
+	if err != nil {
+		_ = s.accountRepo.Credit(ctx, userAccount.ID, totalAmount)
+		return nil, fmt.Errorf("host account not found: %w", err)
+	}
+
+	// 13. Ledger Entry 4: Host CREDIT - Host's earning (pending settlement)
+	hostCreditLedger := &models.TransactionLedger{
+		ID:            uuid.New(),
+		AccountID:     hostAccount.ID,
+		Type:          models.LedgerTypeBookingCredit,
+		AmountCents:   hostEarning, // POSITIVE = money reserved for host
+		ReferenceID:   &platformCredit.ID,
+		ReferenceType: strPtr("ledger"),
+		Description:   strPtr(fmt.Sprintf("Booking earning (after %d%% commission)", feeConfig.PlatformPercentage)),
+		Status:        models.LedgerStatusCompleted,
+		CreatedAt:     time.Now(),
+	}
+	_, err = s.ledgerRepo.Create(ctx, hostCreditLedger)
+	if err != nil {
+		_ = s.accountRepo.Credit(ctx, userAccount.ID, totalAmount)
+		return nil, fmt.Errorf("failed to create host credit ledger: %w", err)
+	}
+
+	// 14. Create the booking record
 	newBooking := &models.Booking{
 		ID:              uuid.New(),
 		EventID:         req.EventID,
@@ -138,27 +243,22 @@ func (s *bookingService) CreateBooking(ctx context.Context, userID uuid.UUID, re
 		Status:          models.BookingStatusPending,
 		IdempotencyKey:  &idempotencyKey,
 		AmountCents:     &totalAmount,
-		ServiceFeeCents: &serviceFee,
-		NetEarningCents: &netEarning,
+		ServiceFeeCents: &platformFee,
+		NetEarningCents: &hostEarning,
 		CreatedAt:       time.Now(),
 		UpdatedAt:       time.Now(),
 	}
 
 	if err := s.bookingRepo.Create(ctx, newBooking); err != nil {
-		// Credit back on failure
 		_ = s.accountRepo.Credit(ctx, userAccount.ID, totalAmount)
-		return nil, err
+		return nil, fmt.Errorf("failed to create booking: %w", err)
 	}
 
-	// 9. Create payment record for the booking
-	paymentIdempotencyKey := idempotencyKey
-	if paymentIdempotencyKey == "" {
-		paymentIdempotencyKey = fmt.Sprintf("booking_%s", newBooking.ID)
-	}
+	// 15. Create payment record (for legacy payment history)
 	displayRef := fmt.Sprintf("BK-%05d", time.Now().UnixMilli()%100000)
 	bookingPayment := &models.Payment{
 		ID:               uuid.New(),
-		IdempotencyKey:   paymentIdempotencyKey,
+		IdempotencyKey:   idempotencyKey,
 		AccountID:        userAccount.ID,
 		Type:             models.PaymentTypeBooking,
 		ReferenceID:      &newBooking.ID,
@@ -171,34 +271,27 @@ func (s *bookingService) CreateBooking(ctx context.Context, userID uuid.UUID, re
 	}
 
 	if err := s.paymentRepo.Create(ctx, bookingPayment); err != nil {
-		// Non-critical — booking still valid, payment record can be reconciled
-		// Log this in production
+		// Non-critical — ledger entries are source of truth
+		fmt.Printf("[BOOKING] Warning: Payment record creation failed: %v\n", err)
 	}
 	newBooking.PaymentID = &bookingPayment.ID
 
-	// 10. Credit host wallet with net earning
-	host, err := s.hostRepo.GetByID(ctx, evt.HostID)
-	if err == nil && host != nil {
-		hostAccount, err := s.accountRepo.GetByOwner(ctx, models.AccountOwnerHost, host.ID)
-		if err == nil && hostAccount != nil {
-			_ = s.accountRepo.Credit(ctx, hostAccount.ID, netEarning)
+	// 16. Update host earnings aggregate (still using legacy system, will be replaced)
+	_ = s.payoutRepo.IncrementEarnings(ctx, host.ID, hostEarning)
+	_ = s.payoutRepo.AddPendingClearance(ctx, host.ID, hostEarning)
 
-			// Update host earnings aggregate
-			_ = s.payoutRepo.IncrementEarnings(ctx, host.ID, netEarning)
-			_ = s.payoutRepo.AddPendingClearance(ctx, host.ID, netEarning)
-		}
-	}
-
-	// 11. Credit platform wallet with service fee
-	platformAccount, err := s.accountRepo.GetByOwner(ctx, models.AccountOwnerPlatform, uuid.Nil)
-	if err == nil && platformAccount != nil {
-		_ = s.accountRepo.Credit(ctx, platformAccount.ID, serviceFee)
-	}
-
-	// 12. Publish event
+	// 17. Publish event
 	s.dispatcher.Publish(event.BookingCreated, newBooking)
 
+	fmt.Printf("[BOOKING] CreateBooking SUCCESS: id=%s, user=%s, event=%s, total=%d, host_earning=%d, platform_fee=%d\n",
+		newBooking.ID, userID, req.EventID, totalAmount, hostEarning, platformFee)
+
 	return newBooking, nil
+}
+
+// Helper to create string pointers
+func strPtr(s string) *string {
+	return &s
 }
 
 func (s *bookingService) ConfirmBooking(ctx context.Context, bookingID uuid.UUID) (*models.Booking, error) {

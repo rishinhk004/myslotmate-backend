@@ -86,6 +86,7 @@ type payoutService struct {
 	accountRepo repository.AccountRepository
 	paymentRepo repository.PaymentRepository
 	hostRepo    repository.HostRepository
+	ledgerRepo  repository.TransactionLedgerRepository
 	provider    payout.Provider
 	dispatcher  *event.Dispatcher
 }
@@ -95,6 +96,7 @@ func NewPayoutService(
 	ar repository.AccountRepository,
 	pmr repository.PaymentRepository,
 	hr repository.HostRepository,
+	lr repository.TransactionLedgerRepository,
 	provider payout.Provider,
 	d *event.Dispatcher,
 ) PayoutService {
@@ -103,6 +105,7 @@ func NewPayoutService(
 		accountRepo: ar,
 		paymentRepo: pmr,
 		hostRepo:    hr,
+		ledgerRepo:  lr,
 		provider:    provider,
 		dispatcher:  d,
 	}
@@ -241,17 +244,17 @@ func (s *payoutService) RequestWithdrawal(ctx context.Context, hostID uuid.UUID,
 		return nil, errors.New("withdrawal amount must be positive")
 	}
 
-	// 1. Check idempotency — return existing payment if already processed
+	// 1. Check idempotency via ledger entries (prevents duplicate withdrawals)
 	if req.IdempotencyKey != "" {
 		fmt.Printf("[PAYOUT] Checking idempotency for key: %s\n", req.IdempotencyKey)
-		existing, err := s.paymentRepo.GetByIdempotencyKey(ctx, req.IdempotencyKey)
-		if err != nil {
-			fmt.Printf("[PAYOUT] Idempotency check error: %v\n", err)
-			return nil, err
-		}
-		if existing != nil {
-			fmt.Printf("[PAYOUT] Idempotent request - returning existing payment: %s with status %s\n", existing.ID, existing.Status)
-			return existing, nil
+		existing, err := s.ledgerRepo.GetByIdempotencyKey(ctx, req.IdempotencyKey)
+		if err == nil && existing != nil {
+			// Already processed this withdrawal — return the payment if it exists
+			fmt.Printf("[PAYOUT] Idempotent request - withdrawal already processed\n")
+			payment, err := s.paymentRepo.GetByIdempotencyKey(ctx, req.IdempotencyKey)
+			if err == nil && payment != nil {
+				return payment, nil
+			}
 		}
 	}
 
@@ -323,16 +326,29 @@ func (s *payoutService) RequestWithdrawal(ctx context.Context, hostID uuid.UUID,
 	}
 	fmt.Printf("[PAYOUT] Payout method selected: methodID=%s, type=%s, verified=true\n", payoutMethod.ID, payoutMethod.Type)
 
-	// 5. Debit wallet (optimistic — credit back on failure)
-	fmt.Printf("[PAYOUT] Debiting wallet: accountID=%s, amount=%d\n", account.ID, req.AmountCents)
-	if err := s.accountRepo.Debit(ctx, account.ID, req.AmountCents); err != nil {
-		fmt.Printf("[PAYOUT] Debit failed: %v\n", err)
-		if errors.Is(err, repository.ErrInsufficientBalance) {
-			return nil, errors.New("insufficient balance for withdrawal")
-		}
-		return nil, err
+	// 5. Create withdrawal ledger entry (immutable record of withdrawal request)
+	fmt.Printf("[PAYOUT] Creating withdrawal ledger entry: accountID=%s, amount=%d\n", account.ID, req.AmountCents)
+
+	withdrawalLedger := &models.TransactionLedger{
+		ID:             uuid.New(),
+		AccountID:      account.ID,
+		Type:           models.LedgerTypeWithdrawalDebit,
+		AmountCents:    -req.AmountCents, // NEGATIVE = debit from host
+		ReferenceID:    &account.ID,
+		ReferenceType:  strPtr("account"),
+		IdempotencyKey: strPtr(req.IdempotencyKey),
+		Description:    strPtr(fmt.Sprintf("Withdrawal request to %s", payoutMethod.Type)),
+		Status:         models.LedgerStatusPending, // Pending until provider confirms
+		CreatedAt:      time.Now(),
+		CreatedBy:      &hostID,
 	}
-	fmt.Printf("[PAYOUT] Wallet debited successfully\n")
+
+	withdrawalLedger, err = s.ledgerRepo.Create(ctx, withdrawalLedger)
+	if err != nil {
+		fmt.Printf("[PAYOUT] Failed to create withdrawal ledger entry: %v\n", err)
+		return nil, fmt.Errorf("failed to record withdrawal: %w", err)
+	}
+	fmt.Printf("[PAYOUT] Withdrawal ledger entry created successfully\n")
 
 	// 6. Create payment record
 	idempotencyKey := req.IdempotencyKey
@@ -357,9 +373,23 @@ func (s *payoutService) RequestWithdrawal(ctx context.Context, hostID uuid.UUID,
 
 	fmt.Printf("[PAYOUT] Creating payment record: paymentID=%s, displayRef=%s\n", payment.ID, displayRef)
 	if err := s.paymentRepo.Create(ctx, payment); err != nil {
-		fmt.Printf("[PAYOUT] Payment record creation failed: %v (rolling back debit)\n", err)
-		// Credit back on failure to create payment record
-		_ = s.accountRepo.Credit(ctx, account.ID, req.AmountCents)
+		fmt.Printf("[PAYOUT] Payment record creation failed: %v (rolling back withdrawal with reversal ledger)\n", err)
+		// Create reversal ledger entry instead of direct credit
+		reversalLedger := &models.TransactionLedger{
+			ID:                 uuid.New(),
+			AccountID:          account.ID,
+			Type:               models.LedgerTypeWebhookReversal,
+			AmountCents:        req.AmountCents, // POSITIVE = credit back
+			ReferenceID:        &withdrawalLedger.ID,
+			ReferenceType:      strPtr("ledger"),
+			IdempotencyKey:     strPtr(fmt.Sprintf("%s_reversal", req.IdempotencyKey)),
+			Description:        strPtr("Reversal - payment record creation failed"),
+			Status:             models.LedgerStatusCompleted,
+			ReversalOfLedgerID: &withdrawalLedger.ID,
+			CreatedAt:          time.Now(),
+			CreatedBy:          nil, // System operation
+		}
+		_, _ = s.ledgerRepo.Create(ctx, reversalLedger)
 		return nil, err
 	}
 	fmt.Printf("[PAYOUT] Payment record created successfully\n")
@@ -538,30 +568,117 @@ func (s *payoutService) HandlePayoutWebhook(ctx context.Context, paymentID uuid.
 		return errors.New("payment is not a payout")
 	}
 
+	// Check webhook idempotency - prevent replay attacks
+	webhookExecKey := fmt.Sprintf("cashfree_payout_%s_%s", paymentID, status)
+	existing, err := s.ledgerRepo.GetWebhookExecution(ctx, "cashfree_payout", paymentID.String(), fmt.Sprintf("%s_%s", paymentID, status))
+	if err == nil && existing != nil {
+		fmt.Printf("[PAYOUT] Webhook: already processed - idempotency key=%s\n", webhookExecKey)
+		return nil // Already processed this webhook
+	}
+
 	fmt.Printf("[PAYOUT] Webhook: processing payout update - current status=%s, new status=%s\n", payment.Status, status)
 
 	switch status {
 	case "completed":
 		fmt.Printf("[PAYOUT] Webhook: marking payment as completed\n")
-		return s.paymentRepo.UpdateStatus(ctx, paymentID, models.PaymentStatusCompleted, nil)
+		if err := s.paymentRepo.UpdateStatus(ctx, paymentID, models.PaymentStatusCompleted, nil); err != nil {
+			return err
+		}
+		// Record webhook execution after successful processing
+		_ = s.ledgerRepo.RecordWebhookExecution(ctx, &models.WebhookExecution{
+			ID:              uuid.New(),
+			EventType:       "cashfree_payout",
+			ProviderID:      "cashfree",
+			ExternalEventID: fmt.Sprintf("%s_%s", paymentID, status),
+			IdempotencyKey:  webhookExecKey,
+			LedgerID:        nil,
+			Status:          "success",
+			ReceivedAt:      time.Now(),
+			ProcessedAt:     time.Now(),
+		})
+		return nil
 
 	case "failed":
-		fmt.Printf("[PAYOUT] Webhook: payment failed, crediting wallet: amount=%d\n", payment.AmountCents)
-		// Credit the amount back to host wallet
-		if err := s.accountRepo.Credit(ctx, payment.AccountID, payment.AmountCents); err != nil {
-			fmt.Printf("[PAYOUT] Webhook: wallet credit failed: %v\n", err)
-			return fmt.Errorf("failed to credit wallet on payout failure: %w", err)
+		fmt.Printf("[PAYOUT] Webhook: payment failed, creating reversal ledger entry: amount=%d\n", payment.AmountCents)
+		// Create reversal ledger entry to credit back the host
+		reversalLedger := &models.TransactionLedger{
+			ID:                  uuid.New(),
+			AccountID:           payment.AccountID,
+			Type:                models.LedgerTypeWebhookReversal,
+			AmountCents:         payment.AmountCents, // POSITIVE = credit back
+			ReferenceID:         &payment.ID,
+			ReferenceType:       strPtr("payment"),
+			IdempotencyKey:      strPtr(fmt.Sprintf("%s_failed_reversal", payment.IdempotencyKey)),
+			Description:         strPtr(fmt.Sprintf("Payout failed reversal - %s", providerError)),
+			Status:              models.LedgerStatusCompleted,
+			ExternalReferenceID: strPtr(webhookExecKey),
+			CreatedAt:           time.Now(),
+			CreatedBy:           nil, // System actor
 		}
-		return s.paymentRepo.IncrementRetry(ctx, paymentID, providerError)
+
+		if _, err := s.ledgerRepo.Create(ctx, reversalLedger); err != nil {
+			fmt.Printf("[PAYOUT] Webhook: reversal ledger creation failed: %v\n", err)
+			return fmt.Errorf("failed to create reversal ledger on payout failure: %w", err)
+		}
+
+		if err := s.paymentRepo.IncrementRetry(ctx, paymentID, providerError); err != nil {
+			return err
+		}
+
+		// Record webhook execution
+		_ = s.ledgerRepo.RecordWebhookExecution(ctx, &models.WebhookExecution{
+			ID:              uuid.New(),
+			EventType:       "cashfree_payout",
+			ProviderID:      "cashfree",
+			ExternalEventID: fmt.Sprintf("%s_%s", paymentID, status),
+			IdempotencyKey:  webhookExecKey,
+			LedgerID:        &reversalLedger.ID,
+			Status:          "success",
+			ReceivedAt:      time.Now(),
+			ProcessedAt:     time.Now(),
+		})
+		return nil
 
 	case "reversed":
-		fmt.Printf("[PAYOUT] Webhook: payment reversed, crediting wallet: amount=%d\n", payment.AmountCents)
-		// Credit the amount back to host wallet
-		if err := s.accountRepo.Credit(ctx, payment.AccountID, payment.AmountCents); err != nil {
-			fmt.Printf("[PAYOUT] Webhook: wallet credit failed: %v\n", err)
-			return fmt.Errorf("failed to credit wallet on payout reversal: %w", err)
+		fmt.Printf("[PAYOUT] Webhook: payment reversed, creating reversal ledger entry: amount=%d\n", payment.AmountCents)
+		// Create reversal ledger entry to credit back the host
+		reversalLedger := &models.TransactionLedger{
+			ID:                  uuid.New(),
+			AccountID:           payment.AccountID,
+			Type:                models.LedgerTypeWebhookReversal,
+			AmountCents:         payment.AmountCents, // POSITIVE = credit back
+			ReferenceID:         &payment.ID,
+			ReferenceType:       strPtr("payment"),
+			IdempotencyKey:      strPtr(fmt.Sprintf("%s_reversed_reversal", payment.IdempotencyKey)),
+			Description:         strPtr(fmt.Sprintf("Payout reversed - %s", providerError)),
+			Status:              models.LedgerStatusCompleted,
+			ExternalReferenceID: strPtr(webhookExecKey),
+			CreatedAt:           time.Now(),
+			CreatedBy:           nil, // System/webhook actor
 		}
-		return s.paymentRepo.UpdateStatus(ctx, paymentID, models.PaymentStatusReversed, &providerError)
+
+		if _, err := s.ledgerRepo.Create(ctx, reversalLedger); err != nil {
+			fmt.Printf("[PAYOUT] Webhook: reversal ledger creation failed: %v\n", err)
+			return fmt.Errorf("failed to create reversal ledger on payout reversal: %w", err)
+		}
+
+		if err := s.paymentRepo.UpdateStatus(ctx, paymentID, models.PaymentStatusReversed, &providerError); err != nil {
+			return err
+		}
+
+		// Record webhook execution
+		_ = s.ledgerRepo.RecordWebhookExecution(ctx, &models.WebhookExecution{
+			ID:              uuid.New(),
+			EventType:       "cashfree_payout",
+			ProviderID:      "cashfree",
+			ExternalEventID: fmt.Sprintf("%s_%s", paymentID, status),
+			IdempotencyKey:  webhookExecKey,
+			LedgerID:        &reversalLedger.ID,
+			Status:          "success",
+			ReceivedAt:      time.Now(),
+			ProcessedAt:     time.Now(),
+		})
+		return nil
 
 	default:
 		fmt.Printf("[PAYOUT] Webhook: unknown payout status: %s\n", status)
@@ -671,14 +788,25 @@ func (s *payoutService) RequestAdminWithdrawal(ctx context.Context, req Withdraw
 		return nil, errors.New("withdrawal amount must be positive")
 	}
 
-	// 1. Check idempotency
+	// 1. Check idempotency (use ledger as source of truth)
 	if req.IdempotencyKey != "" {
-		existing, err := s.paymentRepo.GetByIdempotencyKey(ctx, req.IdempotencyKey)
+		existing, err := s.ledgerRepo.GetByIdempotencyKey(ctx, req.IdempotencyKey)
+		if err == nil && existing != nil {
+			// Ledger entry exists, find associated payment by reference
+			if existing.ReferenceID != nil {
+				payment, _ := s.paymentRepo.GetByID(ctx, *existing.ReferenceID)
+				if payment != nil {
+					return payment, nil
+				}
+			}
+		}
+		// Fallback: check payment repo directly
+		paymentRec, err := s.paymentRepo.GetByIdempotencyKey(ctx, req.IdempotencyKey)
 		if err != nil {
 			return nil, err
 		}
-		if existing != nil {
-			return existing, nil
+		if paymentRec != nil {
+			return paymentRec, nil
 		}
 	}
 
@@ -691,33 +819,45 @@ func (s *payoutService) RequestAdminWithdrawal(ctx context.Context, req Withdraw
 		return nil, errors.New("platform account not found")
 	}
 
-	// 3. Debit wallet
-	if err := s.accountRepo.Debit(ctx, account.ID, req.AmountCents); err != nil {
-		if errors.Is(err, repository.ErrInsufficientBalance) {
-			return nil, errors.New("insufficient platform balance")
-		}
-		return nil, err
-	}
-
-	// 4. Get payout method
+	// 3. Get payout method
 	var payoutMethod *models.PayoutMethod
 	if req.PayoutMethodID != nil {
 		payoutMethod, err = s.payoutRepo.GetPayoutMethodByID(ctx, *req.PayoutMethodID)
 		if err != nil {
-			_ = s.accountRepo.Credit(ctx, account.ID, req.AmountCents)
 			return nil, err
 		}
 	} else {
 		payoutMethod, err = s.payoutRepo.GetAdminPrimaryPayoutMethod(ctx)
 		if err != nil {
-			_ = s.accountRepo.Credit(ctx, account.ID, req.AmountCents)
 			return nil, err
 		}
 	}
 
 	if payoutMethod == nil {
-		_ = s.accountRepo.Credit(ctx, account.ID, req.AmountCents)
 		return nil, errors.New("no payout method found")
+	}
+
+	// 4. Create withdrawal ledger entry (immutable record)
+	fmt.Printf("[PAYOUT] Creating admin withdrawal ledger entry: accountID=%s, amount=%d\n", account.ID, req.AmountCents)
+
+	withdrawalLedger := &models.TransactionLedger{
+		ID:             uuid.New(),
+		AccountID:      account.ID,
+		Type:           models.LedgerTypeWithdrawalDebit,
+		AmountCents:    -req.AmountCents, // NEGATIVE = debit from platform
+		ReferenceID:    &account.ID,
+		ReferenceType:  strPtr("account"),
+		IdempotencyKey: strPtr(req.IdempotencyKey),
+		Description:    strPtr(fmt.Sprintf("Admin withdrawal to %s", payoutMethod.Type)),
+		Status:         models.LedgerStatusPending,
+		CreatedAt:      time.Now(),
+		CreatedBy:      nil, // System operation
+	}
+
+	withdrawalLedger, err = s.ledgerRepo.Create(ctx, withdrawalLedger)
+	if err != nil {
+		fmt.Printf("[PAYOUT] Failed to create admin withdrawal ledger: %v\n", err)
+		return nil, fmt.Errorf("failed to record withdrawal: %w", err)
 	}
 
 	// 5. Create payment record
@@ -741,7 +881,23 @@ func (s *payoutService) RequestAdminWithdrawal(ctx context.Context, req Withdraw
 	}
 
 	if err := s.paymentRepo.Create(ctx, payment); err != nil {
-		_ = s.accountRepo.Credit(ctx, account.ID, req.AmountCents)
+		fmt.Printf("[PAYOUT] Payment record creation failed: %v (rolling back with reversal ledger)\n", err)
+		// Create reversal ledger entry instead of direct credit
+		reversalLedger := &models.TransactionLedger{
+			ID:                 uuid.New(),
+			AccountID:          account.ID,
+			Type:               models.LedgerTypeWebhookReversal,
+			AmountCents:        req.AmountCents, // POSITIVE = credit back
+			ReferenceID:        &withdrawalLedger.ID,
+			ReferenceType:      strPtr("ledger"),
+			IdempotencyKey:     strPtr(fmt.Sprintf("%s_reversal", req.IdempotencyKey)),
+			Description:        strPtr("Reversal - admin payment record creation failed"),
+			Status:             models.LedgerStatusCompleted,
+			ReversalOfLedgerID: &withdrawalLedger.ID,
+			CreatedAt:          time.Now(),
+			CreatedBy:          nil, // System operation, no user actor
+		}
+		_, _ = s.ledgerRepo.Create(ctx, reversalLedger)
 		return nil, err
 	}
 

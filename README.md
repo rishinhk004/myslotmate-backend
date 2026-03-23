@@ -550,73 +550,276 @@ myslotmate-backend/
 
 ## Payment & Wallet Flow
 
-MySlotMate uses an **internal wallet** model (similar to Paytm, Ola, etc.). Users and hosts each have a wallet (`Account`) with a `balance_cents` field. All money movement happens **wallet-to-wallet**, with external transfers only at the edges (topup and payout).
+MySlotMate uses an **immutable transaction ledger** financial architecture (similar to Swiggy, Zomato, and Stripe merchants). This design ensures:
+
+- **Tamper-proof**: No direct balance updates; balance = SUM(ledger entries)
+- **Auditability**: Every money movement is a permanent record with full context
+- **Idempotency**: Webhook replays are safely ignored via UNIQUE constraints
+- **Reconciliation**: Daily verification detects discrepancies and fraud
 
 ```
-External  ──topup──►  User Wallet  ──booking──►  Host Wallet  ──payout──►  Bank/UPI
-                      (Account)                   (Account)                (Razorpay)
+User Wallet  ◄──booking_credit──  Ledger ──webhook_reversal──► Host Wallet
+   (credits)                      (append-only)               (debits on failure)
+                                        │
+                                  ┌─────┴──────┐
+                                  │ Immutable  │
+                                  │ Journal    │
+                                  │ (SUM=bal)  │
+                                  └────────────┘
 ```
 
 ### Core Financial Concepts
 
 | Entity | Purpose |
 |--------|---------|
-| **Account** | Wallet per user/host. `balance_cents` is the source of truth for available funds. Auto-created via DB trigger. |
-| **Payment** | Transaction ledger. Every wallet movement (topup, booking, refund, payout) is recorded as a Payment with idempotency. |
-| **Booking** | Stores fee breakdown: `amount_cents`, `service_fee_cents` (15%), `net_earning_cents` (85%). |
+| **Account** | Wallet per user/host/platform. `balance_cents` is **calculated** as SUM(ledger entries), not stored. Auto-created via DB trigger. |
+| **TransactionLedger** | **Immutable append-only journal** of all money movements. Each entry is permanent and includes idempotency_key, status, and audit trail. |
+| **LedgerTransactionType** | booking_credit, platform_fee_credit, withdrawal_debit, webhook_reversal, manual_credit/debit, etc. |
+| **Payment** | Legacy payment tracking (being phased to ledger). Maintains status for provider integration and retry logic. |
+| **WebhookExecution** | Tracks processed webhooks with UNIQUE(event_type, provider_id, external_event_id) to prevent replays. |
+| **Booking** | Stores fee breakdown: `amount_cents`, `service_fee_cents` (15%), `net_earning_cents` (85%). Triggers 4 ledger entries on creation. |
 | **HostEarnings** | Aggregate view: `total_earnings_cents`, `pending_clearance_cents`. Auto-created via DB trigger. |
 | **PayoutMethod** | Host's bank account or UPI ID for withdrawals. Supports multiple methods with one primary. |
 | **PlatformSettings** | Configurable fee split (default 85% host / 15% platform). |
 
-### Payment Types
+### Ledger Transaction Types
+
+| Type | Direction | Amount | Description |
+|------|-----------|--------|-------------|
+| `booking_credit` | User → System → Host | Both ± | User pays for event; platform takes fee; host keeps net. **4 entries per booking**: (1) User debit -total, (2) Platform credit +total, (3) Platform fee debit -fee, (4) Host credit +net. |
+| `platform_fee_credit` | User earnings → Platform | Negative | Fee earned by platform on booking (implicit from booking_credit split). |
+| `webhook_reversal` | Host balance ← Ledger | Positive | Payout failed/reversed at provider; host automatically credited back. Created by webhook handler. |
+| `refund_credit` | Host → User | Positive | Full refund when booking is cancelled. |
+| `withdrawal_debit` | Host wallet → External | Negative | Host initiates withdrawal request. Stays pending until Cashfree confirms. |
+| `manual_credit` / `manual_debit` | Admin → Account | Both ± | Admin adjustment (with audit trail & approval). |
+
+### Ledger Status Lifecycle
+
+```
+pending ──► completed (booking confirmed, payout success)
+pending ──► reversed   (booking cancelled, payout failed)
+
+Status in Ledger:      Status in Payment (legacy):
+pending                processing
+completed              completed / success
+failed/reversed        failed / reversed
+```
+
+### Immutable Ledger Properties
+
+- **Append-only**: No updates or deletes. Corrections are made via reversals.
+- **Idempotency**: Each entry includes `idempotency_key` to prevent duplicates.
+- **Balance Calculated**: Not stored. Balance = SUM(ledger.amount_cents) WHERE account_id = X.
+- **Balance Verification**: Daily reconciliation checks: stored_balance_cents == calculated_balance_cents.
+- **Audit Trail**: `created_by` (user/admin/system), `created_at`, `metadata`, `external_reference_id` (provider IDs).
+- **Reference Tracking**: `reference_id` + `reference_type` links entries to bookings, payments, etc.
+
+### Legacy Payment Types (Phasing Out)
 
 | Type | Direction | Description |
 |------|-----------|-------------|
-| `topup` | External → User wallet | User adds money to wallet |
-| `booking` | User wallet → Host wallet | User pays for event tickets |
-| `refund` | Host wallet → User wallet | Reversed booking payment |
-| `payout` | Host wallet → Bank/UPI | Host withdraws via Razorpay |
-| `withdrawal` | Host wallet → External | Host cashes out |
+| `topup` | External → User wallet | User adds money to wallet (via Razorpay) |
+| `booking` | User wallet → Host wallet | Booking payment (now uses ledger entries) |
+| `refund` | Reverse booking | Cancelled booking refund |
+| `payout` | Host wallet → Bank/UPI | Host withdrawal via Cashfree |
 
-### Payment Status Lifecycle
+### Safety Features (Ledger-Based)
+
+- **Tamper Detection**: Any direct database modification causes balance mismatch during daily reconciliation.
+- **Overdraft Protection**: Ledger entries are created atomically with idempotency; if withdrawal > balance calculated from ledger, the ledger entry is created but becomes "pending" until confirmed.
+- **Webhook Idempotency**: `WebhookExecution` table with UNIQUE(event_type, provider_id, external_event_id) — webhook processed at most once.
+- **Automatic Reversals**: On payout failure/reversal, webhook handler automatically creates webhook_reversal ledger entry to credit host.
+- **Fraud Checks**: Active fraud flags still block booking and payment operations (checked before ledger entry creation).
+
+---
+
+## Transaction Ledger System (Immutable Architecture)
+
+### Design Philosophy
+
+MySlotMate implements a **transaction ledger system** (inspired by Swiggy, Zomato, Stripe) to ensure:
+
+1. **No balance tampering**: Balance cannot be directly edited; it's **calculated** from ledger entries.
+2. **Complete auditability**: Every money movement creates a permanent record with full context.
+3. **Replay-safe webhooks**: UNIQUE constraints prevent the same webhook from being processed twice.
+4. **Reconciliation**: Daily jobs verify ledger sum matches stored balance; discrepancies detected immediately.
+
+### Architecture Diagram
 
 ```
-pending ──► processing ──► completed
-                       └──► failed (retry_count++)
-completed ──► reversed (for refunds)
+┌─────────────────────────────────────────┐
+│         User makes Booking              │
+│  (POST /bookings with idempotency_key)  │
+└───────────────────┬─────────────────────┘
+                    │
+                    ▼
+        ┌─────────────────────────┐
+        │  Create 4 Ledger Entries │ (atomic via idempotency_key)
+        │  1. User debit -total   │
+        │  2. Platform credit     │
+        │  3. Platform fee debit  │
+        │  4. Host credit +net    │
+        └─────────────────────────┘
+                    │
+                    ▼
+        ┌──────────────────────┐
+        │   TransactionLedger  │ (append-only)
+        │  (immutable journal) │
+        └──────────────────────┘
+                    │
+                    ▼
+        ┌──────────────────────┐
+        │  Get Current Balance │
+        │ SUM(ledger entries)  │
+        │  WHERE account_id=X  │
+        └──────────────────────┘
 ```
 
-### Safety Features
+### Example: Booking Creation Creates 4 Ledger Entries
 
-- **Idempotency:** `idempotency_key` (unique) prevents duplicate charges from retried requests
-- **Non-negative balance:** `CHECK (balance_cents >= 0)` at the database level — wallet can never go negative
-- **Overdraft protection:** Debit query uses `WHERE balance_cents >= amount` so the update silently fails if insufficient
-- **Retry tracking:** `retry_count` + `last_error` for failed payment recovery
-- **Fraud checks:** Active fraud flags block booking and payment operations
+**Scenario**: User books 2 tickets @ 1000 cents each = 2000 cents total.  
+**Fee split**: 15% platform, 85% host.
+
+| Entry | Type | Amount | Account | Idempotency Key | Status | Purpose |
+|-------|------|--------|---------|-----------------|--------|---------|
+| 1 | booking_credit | -2000 | User | `booking_X_v1` | completed | User pays |
+| 2 | booking_credit | +2000 | Platform | `booking_X_v1` | completed | Platform receives |
+| 3 | platform_fee_credit | -300 | Platform | `booking_X_v1` | completed | Fee earned (15%) |
+| 4 | booking_credit | +1700 | Host | `booking_X_v1` | completed | Host earning (85%) |
+
+All 4 entries share the same `idempotency_key` → guaranteed atomic grouping.  
+If the request is retried, the service looks up by key and returns existing entries.
+
+### Webhook Idempotency (Preventing Replays)
+
+```
+Cashfree sends: POST /webhooks/payout with transfer_success event (event_id=ABC123)
+Webhook Handler:
+  1. Check WebhookExecution WHERE event_type='cashfree_payout' AND external_event_id='ABC123'
+  2. If exists → already processed, return early (idempotent)
+  3. If new → Process webhook:
+       - Create withdrawal_complete ledger entry
+       - Update payment status
+       - Record in WebhookExecution (this insert fails if already exists — UNIQUE constraint)
+  4. Next retry of same webhook → Step 1 finds it, returns early
+
+Result: Same webhook can be delivered 1x, 10x, or 100x — always processed exactly once.
+```
+
+### Reconciliation Job (Daily Balance Verification)
+
+```
+Every 24 hours:
+  1. For each account:
+       - calculated_balance = SUM(ledger.amount_cents) WHERE account_id = X
+       - stored_balance = account.balance_cents
+  2. If calculated_balance == stored_balance:
+       - ✓ MATCHED
+  3. If mismatch:
+       - ✗ DISCREPANCY DETECTED
+       - INSERT INTO reconciliation_discrepancies
+       - Flag for manual investigation
+
+Result: Any direct database tampering is detected within 24 hours.
+No way to hide forged money — ledger and stored balance must match!
+```
+
+### Data Model
+
+**TransactionLedger Table**:
+```sql
+CREATE TABLE transaction_ledger (
+  id UUID PRIMARY KEY,
+  account_id UUID NOT NULL,
+  type VARCHAR NOT NULL,                    -- booking_credit, withdrawal_debit, etc.
+  amount_cents BIGINT NOT NULL,             -- ±, relative to account
+  reference_id UUID,                        -- booking.id, payment.id, etc.
+  reference_type VARCHAR,                   -- "booking", "payment", "account"
+  idempotency_key VARCHAR UNIQUE,           -- group related entries
+  description TEXT,
+  balance_after_cents BIGINT,               -- calculated at insert time
+  external_reference_id VARCHAR,            -- Cashfree/Razorpay ID
+  reversal_of_ledger_id UUID,              -- links reversal to original
+  status VARCHAR,                           -- pending, completed, failed, reversed
+  metadata JSONB,
+  created_at TIMESTAMPTZ,
+  created_by UUID                           -- user/admin/system
+  -- Indexes: account_id, reference_id, created_at DESC, idempotency_key, status
+);
+```
+
+**WebhookExecution Table** (prevents replays):
+```sql
+CREATE TABLE webhook_executions (
+  id UUID PRIMARY KEY,
+  event_type VARCHAR NOT NULL,              -- "cashfree_payout", "razorpay_payment"
+  provider_id VARCHAR NOT NULL,             -- "cashfree", "razorpay"
+  external_event_id VARCHAR NOT NULL,       -- provider's unique event ID
+  idempotency_key VARCHAR NOT NULL UNIQUE,  -- Ensures at-most-once processing
+  ledger_id UUID,                           -- linked ledger entry created
+  status VARCHAR,                           -- "success", "failed", "skipped"
+  error_message TEXT,
+  raw_payload JSONB,
+  received_at TIMESTAMPTZ,
+  processed_at TIMESTAMPTZ,
+  -- UNIQUE(event_type, provider_id, external_event_id) ensures no duplicates
+);
+```
+
+**ReconciliationRun Table** (daily verification):
+```sql
+CREATE TABLE reconciliation_runs (
+  id UUID PRIMARY KEY,
+  run_date TIMESTAMPTZ,
+  total_accounts_checked INT,
+  accounts_matched INT,
+  accounts_discrepancy INT,
+  total_ledger_amount_cents BIGINT,
+  total_balance_amount_cents BIGINT,
+  status VARCHAR
+);
+```
+
+---
 
 ---
 
 ## Booking Flow
 
-### Creating a Booking
+### Creating a Booking (Ledger-Based)
 
 ```
 1.  User sends POST /bookings with event_id, quantity, and idempotency_key
-2.  Service checks for active fraud flags on the user
-3.  Service checks idempotency — returns existing booking if key already used
+2.  Service checks idempotency via ledger:
+      SELECT FROM transaction_ledger WHERE idempotency_key = ?
+      If found → return existing booking (fully idempotent)
+3.  Service checks for active fraud flags on the user
 4.  Service checks event capacity:
       SUM(quantity) WHERE status IN ('pending','confirmed') + new_quantity ≤ capacity
 5.  Fee calculated from PlatformSettings (default 85/15):
       total    = price × quantity
       fee      = total × 15%
       net      = total − fee    (85%)
-6.  User wallet debited: Account.balance_cents -= total
-7.  Payment record created: type=booking, reference_id=booking.id, status=completed
-8.  Host wallet credited: Account.balance_cents += net
-9.  HostEarnings.total_earnings_cents += net
-10. Booking created with status=confirmed
-11. BookingCreated event published (Observer pattern)
+6.  CREATE 4 IMMUTABLE LEDGER ENTRIES (atomic via idempotency_key):
+      Entry 1: User wallet DEBIT
+        type=booking_credit, amount_cents=-total, status=completed
+      Entry 2: Platform CREDIT  
+        type=booking_credit, amount_cents=+total, status=completed
+      Entry 3: Platform FEE DEBIT
+        type=platform_fee_credit, amount_cents=-fee, status=completed
+      Entry 4: Host wallet CREDIT
+        type=booking_credit, amount_cents=+net, status=completed
+7.  Booking created with status=confirmed
+8.  BookingCreated event published (Observer pattern)
+9.  Balance calculated on-the-fly: User balance = SUM(ledger) WHERE account_id=user_id
 ```
+
+### Error Handling (Automatic Reversal)
+
+If any step after ledger creation fails (e.g., database connection lost):
+- Automatic reversal entry created: type=webhook_reversal, amount_cents=+total
+- User is NOT double-charged — ledger sum remains correct
+- System operator can investigate the discrepancy in `reconciliation_discrepancies` table
 
 ### Confirming a Booking
 
@@ -626,16 +829,21 @@ completed ──► reversed (for refunds)
 3.  BookingConfirmed event published
 ```
 
-### Cancelling a Booking (Full Refund)
+### Cancelling a Booking (Full Refund via Ledger)
 
 ```
 1.  POST /bookings/{bookingID}/cancel
 2.  Booking.status → cancelled, cancelled_at = now
-3.  User wallet credited: Account.balance_cents += amount_cents (full refund)
-4.  Host wallet debited: Account.balance_cents -= net_earning_cents
-5.  Refund payment record created: type=refund, reference_id=booking.id
-6.  HostEarnings.pending_clearance_cents adjusted
-7.  BookingCancelled event published
+3.  CREATE REVERSAL LEDGER ENTRIES:
+      Entry 1: User wallet CREDIT (refund)
+        type=refund_credit, amount_cents=+total, status=completed
+      Entry 2: Host wallet DEBIT (reversal of earnings)
+        type=refund_credit, amount_cents=-net, status=completed
+      Entry 3: Platform FEE REVERSAL
+        type=refund_credit, amount_cents=+fee, status=completed
+4.  HostEarnings.pending_clearance_cents adjusted
+5.  BookingCancelled event published
+6.  Balance updates automatically: ledger sum changes, balance recalculated
 ```
 
 ---
@@ -714,7 +922,7 @@ This flow demonstrates the interaction between multiple layers and design patter
 
 ## Payout Flow
 
-Hosts withdraw earnings to their bank account or UPI via Cashfree Payouts API.
+Hosts withdraw earnings to their bank account or UPI via Cashfree Payouts API. The payout flow uses the **immutable ledger system** with webhook idempotency to ensure funds are never lost or duplicated, even if webhooks are replayed.
 
 ### Adding a Payout Method
 
@@ -722,35 +930,94 @@ Hosts withdraw earnings to their bank account or UPI via Cashfree Payouts API.
 1. Host sends POST /payouts/methods with bank details or UPI ID
 2. Account number is masked (last 4 digits stored as display)
 3. First method is automatically set as primary
+4. Both host and admin can add payout methods
 ```
 
-### Requesting a Withdrawal
+### Requesting a Withdrawal (Ledger-Based)
 
 ```
 1.  Host sends POST /payouts/withdraw with host_id, amount, and payout_method_id
 2.  Service checks for active fraud flags
-3.  Service checks idempotency (prevents duplicate withdrawals)
-4.  Service validates: amount ≤ Account.balance_cents
-5.  Host wallet debited: Account.balance_cents -= amount
+3.  Service checks idempotency via ledger:
+      SELECT FROM transaction_ledger WHERE idempotency_key = ?
+      If found → return existing payment (fully idempotent)
+4.  Service validates: calculated_balance (SUM ledger) >= amount
+5.  CREATE IMMUTABLE LEDGER ENTRY:
+      type=withdrawal_debit, amount_cents=-amount, status=pending
+      (Note: stays PENDING until Cashfree webhook confirms)
 6.  Payment record created: type=payout, status=processing
 7.  Cashfree Payouts API called with transfer payload:
-  - `transfer_id` = payment UUID
-  - Beneficiary instrument details for bank (`bank_account_number`, `bank_ifsc`) or UPI (`vpa`)
-8.  On provider success → Payment status updated with provider ref ID
-9.  On provider failure → Wallet credited back, Payment status=failed
+      - transfer_id = payment UUID
+      - Beneficiary details for bank or UPI
+      - Signature verification
+8.  On provider success → Payment status = processing (waiting for webhook)
+9.  On provider failure → Automatic reversal ledger entry created:
+      type=webhook_reversal, amount_cents=+amount
+      Host balance restored automatically (ledger sum recalculated)
 ```
 
-### Webhook Processing (Async Settlement)
+### Webhook Processing (Async Settlement + Idempotency)
 
 ```
 1.  Cashfree sends POST /webhooks/payout with event payload
 2.  Webhook controller verifies webhook signature (HMAC-SHA256)
-3.  Event type mapped to internal status:
-  transfer success → completed
-  transfer failed  → failed (wallet credited back)
-  transfer reversed → reversed (wallet credited back)
-4.  Payment record updated with final status
-5.  PayoutCompleted / PayoutFailed event published
+3.  CHECK IDEMPOTENCY:
+      SELECT FROM webhook_executions 
+      WHERE event_type='cashfree_payout' 
+      AND external_event_id=?
+      If found → already processed, return early (webhook is idempotent!)
+4.  Process webhook based on event:
+
+      Case: "transfer completed"
+      ├─ Update Payment status → completed
+      └─ Record in webhook_executions (prevents re-processing)
+
+      Case: "transfer failed"
+      ├─ CREATE REVERSAL LEDGER ENTRY:
+      │  type=webhook_reversal, amount_cents=+amount, status=completed
+      │  (Host wallet automatically credited back)
+      ├─ Update Payment status → failed, increment retry_count
+      └─ Record in webhook_executions
+      
+      Case: "transfer reversed"
+      ├─ CREATE REVERSAL LEDGER ENTRY:
+      │  type=webhook_reversal, amount_cents=+amount, status=completed
+      │  (Host wallet automatically credited back)
+      ├─ Update Payment status → reversed
+      └─ Record in webhook_executions
+
+5.  PayoutCompleted / PayoutFailed / PayoutReversed event published
+```
+
+### Webhook Idempotency Details
+
+The system is protected against webhook replays via the `webhook_executions` table:
+
+```sql
+CREATE UNIQUE INDEX idx_webhook_unique 
+  ON webhook_executions(event_type, provider_id, external_event_id);
+```
+
+**Scenario**: Cashfree webhook delivery sometimes retries if acknowledgment is not received.
+
+| Delivery | Event ID | Action |
+|----------|----------|--------|
+| 1st | ABC123 | Process: create ledger, update payment, INSERT webhook_execution |
+| 2nd retry | ABC123 | Check: webhook_execution exists → return early (idempotent) |
+| 3rd retry | ABC123 | Check: webhook_execution exists → return early (idempotent) |
+
+**Result**: Host is credited exactly once, even if webhook is delivered 3x.
+
+### Admin Withdrawals
+
+Similar to host withdrawals, but for the **platform account** (uuid.Nil):
+
+```
+1. Admin sends POST /payouts/admin/withdraw
+2. Ledger entry created: type=withdrawal_debit, account_id=platform_id
+3. Cashfree transfer initiated
+4. Webhook processing creates reversal if needed
+5. Platform balance = SUM(ledger) WHERE account_id=uuid.Nil
 ```
 
 ### Cashfree Payout Integration Details
@@ -762,18 +1029,21 @@ Hosts withdraw earnings to their bank account or UPI via Cashfree Payouts API.
 | Beneficiary | Inline `beneficiary_details` payload |
 | Bank Transfer | `transfer_mode=banktransfer` with account + IFSC |
 | UPI Transfer | `transfer_mode=upi` with VPA |
-| Webhook | HMAC-SHA256 signature verification |
-| Idempotency | `transfer_id` = payment UUID |
+| Webhook | HMAC-SHA256 signature verification + replay prevention |
+| Idempotency | Ledger + webhook_executions table (at-most-once processing) |
+| Retry | Automatic via retry_count in Payment, with exponential backoff |
 
 ### Earnings Dashboard
 
 Available via `GET /payouts/earnings/{hostID}`:
 
 ```
-Available balance  = Account.balance_cents       (host's wallet)
-Total earnings     = HostEarnings.total_earnings_cents
-Pending clearance  = HostEarnings.pending_clearance_cents
-Fee config         = PlatformSettings (85% host / 15% platform)
+Available balance  = SUM(transaction_ledger) WHERE account_id = host_id
+                  = guaranteed to be consistent with ledger history
+Total earnings     = SUM(booking_credit) WHERE account_id = host_id AND type = 'booking_credit'
+Pending withdrawal = SUM(withdrawal_debit) WHERE account_id = host_id AND status = 'pending'
+Fee config         = PlatformSettings (default 85% host / 15% platform)
+Ledger history     = Full transaction history with all entries
 ```
 
 ---

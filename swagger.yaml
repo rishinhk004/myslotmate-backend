@@ -2,14 +2,41 @@ openapi: "3.0.3"
 info:
   title: MySlotMate API
   description: |
-    Backend API for **MySlotMate** – a slot-booking platform with wallet-based payments,
+    Backend API for **MySlotMate** – a slot-booking platform with **immutable transaction ledger** architecture,
     Cashfree payouts, Aadhar (Setu OKYC) verification, AWS S3 file uploads,
     and real-time inbox messaging.
 
-    Every response follows the standard envelope:
+    ## Financial Architecture
+
+    MySlotMate uses an **immutable transaction ledger system** (similar to Swiggy, Zomato, Stripe) to ensure tamper-proof money handling:
+
+    - **Ledger-based balance**: Account balance is **calculated** from transaction ledger entries, not stored directly.
+    - **Idempotent webhooks**: UNIQUE constraint on webhook events prevents duplicate processing (webhook processed at most once).
+    - **Automatic reversals**: Failed payouts automatically create reversal ledger entries to credit hosts.
+    - **Reconciliation**: Daily jobs verify ledger sum == stored balance to detect tampering.
+
+    Every money movement (bookings, payouts, refunds) creates immutable ledger entries with full audit trail.
+
+    ## Standard Response Format
+
+    Every response follows this envelope:
     ```json
-    { "success": true|false, "data": ..., "message": "...", "error": "..." }
+    { 
+      "success": true|false, 
+      "data": {...}, 
+      "message": "...", 
+      "error": "..." 
+    }
     ```
+
+    ## Ledger Transaction Types
+
+    - `booking_credit`: User books event, platform takes fee, host gets earnings (4 entries)
+    - `platform_fee_credit`: Fee earned by platform
+    - `webhook_reversal`: Payout failed/reversed; host credited back
+    - `refund_credit`: Booking cancelled; full refund
+    - `withdrawal_debit`: Host initiates withdrawal
+    - `manual_credit`/`manual_debit`: Admin adjustments
   version: "2.0.0"
 
 servers:
@@ -1295,7 +1322,16 @@ paths:
   /bookings/:
     post:
       tags: [Bookings]
-      summary: Create a booking (wallet debit, fee split)
+      summary: Create a booking (Ledger-Based with 4 Immutable Entries)
+      description: |
+        Creates a new booking and generates 4 immutable transaction ledger entries:
+        1. **User DEBIT**: -amount_cents (user pays)
+        2. **Platform CREDIT**: +amount_cents (platform receives)  
+        3. **Platform FEE DEBIT**: -service_fee_cents (15% fee deducted)
+        4. **Host CREDIT**: +net_earning_cents (85% earnings credited)
+        
+        All entries share the same idempotency_key for atomic grouping.
+        Balance is calculated as SUM(ledger) — cannot be tampered with directly.
       operationId: createBooking
       requestBody:
         required: true
@@ -1305,7 +1341,7 @@ paths:
               $ref: "#/components/schemas/CreateBookingRequest"
       responses:
         "201":
-          description: Booking created
+          description: Booking created (immutable ledger entries created)
           content:
             application/json:
               schema:
@@ -1357,7 +1393,15 @@ paths:
   /bookings/{bookingID}/cancel:
     post:
       tags: [Bookings]
-      summary: Cancel a booking and trigger refund
+      summary: Cancel a booking (Ledger-Based Reversal with Full Refund)
+      description: |
+        Cancels a booking and automatically creates reversal ledger entries:
+        1. **User CREDIT**: +amount_cents (full refund)
+        2. **Host DEBIT**: -net_earning_cents (reversal of earnings)
+        3. **Platform FEE CREDIT**: +service_fee_cents (fee returned to platform pool)
+        
+        All reversals are idempotent and create immutable audit trail.
+        User balance automatically recalculated from updated ledger.
       operationId: cancelBooking
       parameters:
         - $ref: "#/components/parameters/BookingIDPath"
@@ -1374,7 +1418,7 @@ paths:
                   format: uuid
       responses:
         "200":
-          description: Booking cancelled
+          description: Booking cancelled (reversal ledger entries created)
           content:
             application/json:
               schema:
@@ -1504,7 +1548,15 @@ paths:
   /payouts/withdraw:
     post:
       tags: [Payouts]
-      summary: Request a payout withdrawal (Cashfree)
+      summary: Request a payout withdrawal (Cashfree) - Ledger-Based
+      description: |
+        Host requests a withdrawal of earned funds to their bank/UPI account.
+        
+        **Ledger-Based Architecture:**
+        - Creates immutable withdrawal_debit ledger entry (status=pending)
+        - Calls Cashfree Payouts API to initiate transfer
+        - On failure: Automatic webhook_reversal ledger entry credits host
+        - Idempotency via transaction_ledger + webhook_executions prevents duplicates
       operationId: withdraw
       requestBody:
         required: true
@@ -1514,7 +1566,7 @@ paths:
               $ref: "#/components/schemas/WithdrawalRequest"
       responses:
         "201":
-          description: Withdrawal initiated
+          description: Withdrawal initiated (immutable ledger entry created)
           content:
             application/json:
               schema:
@@ -1527,13 +1579,21 @@ paths:
   /payouts/earnings/{hostID}:
     get:
       tags: [Payouts]
-      summary: Get earnings summary for a host
+      summary: Get earnings summary for a host (Ledger-Based)
+      description: |
+        Retrieves comprehensive earnings data calculated from the immutable transaction ledger.
+        
+        **Available Balance:** Calculated as SUM(transaction_ledger) WHERE account_id=host_id
+        **Total Earnings:** Sum of all booking_credit entries for the host
+        **Pending Withdrawals:** Sum of withdrawal_debit entries with status=pending
+        
+        Balance is never stored directly — always calculated from ledger to prevent tampering.
       operationId: getEarnings
       parameters:
         - $ref: "#/components/parameters/HostIDPath"
       responses:
         "200":
-          description: Earnings summary
+          description: Earnings summary (calculated from immutable ledger)
           content:
             application/json:
               schema:
@@ -2036,11 +2096,21 @@ paths:
   /webhooks/payout:
     post:
       tags: [Webhooks]
-      summary: Cashfree payout webhook receiver
+      summary: Cashfree payout webhook receiver (Idempotent)
       operationId: cashfreePayoutWebhook
       description: |
         Called by Cashfree when a payout/transfer status changes.
-        The webhook signature header is verified using HMAC-SHA256.
+        
+        **Webhook Idempotency (At-Most-Once Processing):**
+        - Checked against webhook_executions table before processing
+        - UNIQUE(event_type, provider_id, external_event_id) ensures exactly-once delivery
+        - Same webhook can be delivered multiple times; processing is idempotent
+        
+        **Ledger-Based Handling:**
+        - On success: Payment status updated to completed
+        - On failed/reversed: Automatic webhook_reversal ledger entry created to credit host
+        - Host balance recalculated from ledger (automatic reversal credits)
+        - All actions recorded in webhook_executions table for audit trail
       parameters:
         - name: x-webhook-signature
           in: header
@@ -2055,7 +2125,7 @@ paths:
               $ref: "#/components/schemas/CashfreePayoutWebhookEvent"
       responses:
         "200":
-          description: Webhook processed
+          description: Webhook processed (idempotent)
           content:
             application/json:
               schema:
@@ -3837,3 +3907,215 @@ components:
             message:
               type: string
               example: "OTP sent to registered mobile"
+
+    # ── Transaction Ledger (Immutable Architecture) ──────────
+    TransactionLedger:
+      type: object
+      description: Immutable transaction journal entry. Balance = SUM(ledger entries) WHERE account_id = X
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier
+        account_id:
+          type: string
+          format: uuid
+          description: Account (user/host/platform) this entry belongs to
+        type:
+          $ref: "#/components/schemas/LedgerTransactionType"
+        amount_cents:
+          type: integer
+          format: int64
+          description: "Amount in cents. Negative = debit, Positive = credit"
+          example: -100000
+        reference_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: ID of referenced entity (booking.id, payment.id, etc.)
+        reference_type:
+          type: string
+          nullable: true
+          description: Type of reference (booking, payment, account, etc.)
+          enum: [booking, payment, account, event, user]
+        idempotency_key:
+          type: string
+          nullable: true
+          description: Shared across related entries for atomic grouping. Prevents duplicates.
+          example: "booking_12345_v1"
+        description:
+          type: string
+          nullable: true
+          description: Human-readable description of the transaction
+        balance_after_cents:
+          type: integer
+          format: int64
+          nullable: true
+          description: Account balance after this entry (for audit trail)
+        external_reference_id:
+          type: string
+          nullable: true
+          description: Provider ID (Razorpay, Cashfree, etc.)
+        reversal_of_ledger_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: If this is a reversal, links to the original ledger entry
+        status:
+          $ref: "#/components/schemas/LedgerStatus"
+        metadata:
+          type: object
+          nullable: true
+          description: Additional metadata (JSON)
+        created_at:
+          type: string
+          format: date-time
+        created_by:
+          type: string
+          format: uuid
+          nullable: true
+          description: User/admin/system who created this entry
+
+    LedgerTransactionType:
+      type: string
+      description: Type of transaction in the immutable ledger
+      enum:
+        - booking_credit         # User books event, platform/host credited
+        - platform_fee_credit    # Platform fee earned
+        - refund_credit          # Booking cancelled, user refunded
+        - webhook_reversal       # Payout failed/reversed, host credited back
+        - manual_credit          # Admin adjustment (credit)
+        - withdrawal_debit       # Host initiates withdrawal (debit)
+        - cancellation_debit     # Booking cancellation debit
+        - payout_debit           # Payout initiated (temporary)
+        - manual_debit           # Admin adjustment (debit)
+
+    LedgerStatus:
+      type: string
+      description: Status of ledger entry
+      enum:
+        - pending     # Async operation not yet confirmed (e.g., awaiting webhook)
+        - completed   # Confirmed by webhook or immediate operation
+        - failed      # Operation failed, should be reversed
+        - reversed    # Explicitly reversed (e.g., refund, reversal)
+
+    WebhookExecution:
+      type: object
+      description: Tracks processed webhooks to prevent replays (at-most-once guarantee)
+      properties:
+        id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+          description: "Type of webhook event: cashfree_payout, razorpay_payment, etc."
+          example: "cashfree_payout"
+        provider_id:
+          type: string
+          description: "Provider identifier: cashfree, razorpay, etc."
+          example: "cashfree"
+        external_event_id:
+          type: string
+          description: Unique event ID from provider (combines with event_type & provider_id for UNIQUE constraint)
+          example: "TRF20260323120000ABC123"
+        idempotency_key:
+          type: string
+          description: Unique key for this webhook execution (prevents duplicates)
+        ledger_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Associated ledger entry created by this webhook
+        status:
+          type: string
+          description: "Processing status: success, failed, skipped"
+          enum: [success, failed, skipped]
+        error_message:
+          type: string
+          nullable: true
+          description: Error message if webhook processing failed
+        raw_payload:
+          type: object
+          nullable: true
+          description: Original webhook payload (for debugging)
+        received_at:
+          type: string
+          format: date-time
+          description: When the webhook was received
+        processed_at:
+          type: string
+          format: date-time
+          description: When the webhook was actually processed
+
+    ReconciliationRun:
+      type: object
+      description: Daily balance reconciliation results (stored_balance vs ledger sum)
+      properties:
+        id:
+          type: string
+          format: uuid
+        run_date:
+          type: string
+          format: date-time
+        total_accounts_checked:
+          type: integer
+          description: Number of accounts verified
+        accounts_matched:
+          type: integer
+          description: Accounts where stored_balance == SUM(ledger)
+        accounts_discrepancy:
+          type: integer
+          description: Accounts with mismatch (potential tampering)
+        total_ledger_amount_cents:
+          type: integer
+          format: int64
+          description: Sum of all ledger entries across all accounts
+        total_balance_amount_cents:
+          type: integer
+          format: int64
+          description: Sum of all stored balances across all accounts
+        status:
+          type: string
+          enum: [pending, completed, failed]
+
+    ReconciliationDiscrepancy:
+      type: object
+      description: Individual account balance discrepancy found during reconciliation
+      properties:
+        id:
+          type: string
+          format: uuid
+        reconciliation_run_id:
+          type: string
+          format: uuid
+          description: Which reconciliation run found this discrepancy
+        account_id:
+          type: string
+          format: uuid
+        stored_balance_cents:
+          type: integer
+          format: int64
+        ledger_calculated_cents:
+          type: integer
+          format: int64
+        difference_cents:
+          type: integer
+          format: int64
+          description: Discrepancy amount (stored - calculated)
+        severity:
+          type: string
+          enum: [low, medium, high, critical]
+        notes:
+          type: string
+          nullable: true
+        flagged_at:
+          type: string
+          format: date-time
+        reviewed_at:
+          type: string
+          format: date-time
+          nullable: true
+        reviewed_by:
+          type: string
+          format: uuid
+          nullable: true
