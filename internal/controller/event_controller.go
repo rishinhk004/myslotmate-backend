@@ -97,9 +97,11 @@ type EventCreateRequestBody struct {
 	Time               time.Time                  `json:"time"`
 	EndTime            *time.Time                 `json:"end_time,omitempty"`
 	IsOnline           bool                       `json:"is_online"`
+	MeetingLink        *string                    `json:"meeting_link,omitempty"` // for online events (zoom, teams, google meet, etc.)
 	Location           *string                    `json:"location,omitempty"`
 	LocationLat        *float64                   `json:"location_lat,omitempty"`
 	LocationLng        *float64                   `json:"location_lng,omitempty"`
+	GoogleMapsURL      *string                    `json:"google_maps_url,omitempty"` // direct link to Google Maps location
 	DurationMinutes    *int                       `json:"duration_minutes,omitempty"`
 	Capacity           int                        `json:"capacity"`
 	MinGroupSize       *int                       `json:"min_group_size,omitempty"`
@@ -122,9 +124,11 @@ type EventUpdateRequestBody struct {
 	Time               *time.Time                 `json:"time,omitempty"`
 	EndTime            *time.Time                 `json:"end_time,omitempty"`
 	IsOnline           *bool                      `json:"is_online,omitempty"`
+	MeetingLink        *string                    `json:"meeting_link,omitempty"` // for online events (zoom, teams, google meet, etc.)
 	Location           *string                    `json:"location,omitempty"`
 	LocationLat        *float64                   `json:"location_lat,omitempty"`
 	LocationLng        *float64                   `json:"location_lng,omitempty"`
+	GoogleMapsURL      *string                    `json:"google_maps_url,omitempty"` // direct link to Google Maps location
 	DurationMinutes    *int                       `json:"duration_minutes,omitempty"`
 	Capacity           *int                       `json:"capacity,omitempty"`
 	MinGroupSize       *int                       `json:"min_group_size,omitempty"`
@@ -178,9 +182,11 @@ func (c *EventController) CreateEvent(w http.ResponseWriter, r *http.Request) {
 		Time:               req.Time,
 		EndTime:            req.EndTime,
 		IsOnline:           req.IsOnline,
+		MeetingLink:        req.MeetingLink,
 		Location:           req.Location,
 		LocationLat:        req.LocationLat,
 		LocationLng:        req.LocationLng,
+		GoogleMapsURL:      req.GoogleMapsURL,
 		DurationMinutes:    req.DurationMinutes,
 		Capacity:           req.Capacity,
 		MinGroupSize:       req.MinGroupSize,
@@ -232,9 +238,11 @@ func (c *EventController) UpdateEvent(w http.ResponseWriter, r *http.Request) {
 		Time:               body.Time,
 		EndTime:            body.EndTime,
 		IsOnline:           body.IsOnline,
+		MeetingLink:        body.MeetingLink,
 		Location:           body.Location,
 		LocationLat:        body.LocationLat,
 		LocationLng:        body.LocationLng,
+		GoogleMapsURL:      body.GoogleMapsURL,
 		DurationMinutes:    body.DurationMinutes,
 		Capacity:           body.Capacity,
 		MinGroupSize:       body.MinGroupSize,

@@ -24,9 +24,11 @@ type Event struct {
 
 	// ── Logistics ───────────────────────────────────────────────────────────
 	IsOnline        bool     `db:"is_online" json:"is_online"`
-	Location        *string  `db:"location" json:"location,omitempty"` // address/landmark
+	MeetingLink     *string  `db:"meeting_link" json:"meeting_link,omitempty"` // for online events (zoom, teams, google meet, etc.)
+	Location        *string  `db:"location" json:"location,omitempty"`         // address/landmark
 	LocationLat     *float64 `db:"location_lat" json:"location_lat,omitempty"`
 	LocationLng     *float64 `db:"location_lng" json:"location_lng,omitempty"`
+	GoogleMapsURL   *string  `db:"google_maps_url" json:"google_maps_url,omitempty"` // direct link to Google Maps location
 	DurationMinutes *int     `db:"duration_minutes" json:"duration_minutes,omitempty"`
 	MinGroupSize    *int     `db:"min_group_size" json:"min_group_size,omitempty"`
 	MaxGroupSize    *int     `db:"max_group_size" json:"max_group_size,omitempty"`

@@ -37,9 +37,11 @@ type EventCreateRequest struct {
 	CoverImageURL      *string                    `json:"cover_image_url,omitempty"`
 	GalleryURLs        []string                   `json:"gallery_urls,omitempty"`
 	IsOnline           bool                       `json:"is_online"`
+	MeetingLink        *string                    `json:"meeting_link,omitempty"` // for online events
 	Location           *string                    `json:"location,omitempty"`
 	LocationLat        *float64                   `json:"location_lat,omitempty"`
 	LocationLng        *float64                   `json:"location_lng,omitempty"`
+	GoogleMapsURL      *string                    `json:"google_maps_url,omitempty"` // for location-based events
 	DurationMinutes    *int                       `json:"duration_minutes,omitempty"`
 	MinGroupSize       *int                       `json:"min_group_size,omitempty"`
 	MaxGroupSize       *int                       `json:"max_group_size,omitempty"`
@@ -63,9 +65,11 @@ type EventUpdateRequest struct {
 	CoverImageURL      *string                    `json:"cover_image_url,omitempty"`
 	GalleryURLs        []string                   `json:"gallery_urls,omitempty"`
 	IsOnline           *bool                      `json:"is_online,omitempty"`
+	MeetingLink        *string                    `json:"meeting_link,omitempty"` // for online events
 	Location           *string                    `json:"location,omitempty"`
 	LocationLat        *float64                   `json:"location_lat,omitempty"`
 	LocationLng        *float64                   `json:"location_lng,omitempty"`
+	GoogleMapsURL      *string                    `json:"google_maps_url,omitempty"` // for location-based events
 	DurationMinutes    *int                       `json:"duration_minutes,omitempty"`
 	MinGroupSize       *int                       `json:"min_group_size,omitempty"`
 	MaxGroupSize       *int                       `json:"max_group_size,omitempty"`
@@ -125,9 +129,11 @@ func (s *eventService) CreateEvent(ctx context.Context, hostID uuid.UUID, req Ev
 		CoverImageURL:      req.CoverImageURL,
 		GalleryURLs:        pq.StringArray(req.GalleryURLs),
 		IsOnline:           req.IsOnline,
+		MeetingLink:        req.MeetingLink,
 		Location:           req.Location,
 		LocationLat:        req.LocationLat,
 		LocationLng:        req.LocationLng,
+		GoogleMapsURL:      req.GoogleMapsURL,
 		DurationMinutes:    req.DurationMinutes,
 		MinGroupSize:       req.MinGroupSize,
 		MaxGroupSize:       req.MaxGroupSize,
@@ -195,6 +201,9 @@ func (s *eventService) UpdateEvent(ctx context.Context, eventID uuid.UUID, hostI
 	if req.IsOnline != nil {
 		evt.IsOnline = *req.IsOnline
 	}
+	if req.MeetingLink != nil {
+		evt.MeetingLink = req.MeetingLink
+	}
 	if req.Location != nil {
 		evt.Location = req.Location
 	}
@@ -203,6 +212,9 @@ func (s *eventService) UpdateEvent(ctx context.Context, eventID uuid.UUID, hostI
 	}
 	if req.LocationLng != nil {
 		evt.LocationLng = req.LocationLng
+	}
+	if req.GoogleMapsURL != nil {
+		evt.GoogleMapsURL = req.GoogleMapsURL
 	}
 	if req.DurationMinutes != nil {
 		evt.DurationMinutes = req.DurationMinutes
