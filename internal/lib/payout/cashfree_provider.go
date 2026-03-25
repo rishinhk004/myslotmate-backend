@@ -90,7 +90,19 @@ func (p *CashfreeProvider) InitiateTransfer(ctx context.Context, req TransferReq
 		fmt.Printf("[CASHFREE] HTTP request creation error: %v\n", err)
 		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 	}
-	p.setHeaders(httpReq)
+	p.setHeaders(httpReq, body, http.MethodPost, "/payout/transfers")
+
+	// Debug: print all headers
+	fmt.Printf("[CASHFREE] Request headers:\n")
+	for key, values := range httpReq.Header {
+		for _, value := range values {
+			if key == "X-Client-Secret" {
+				fmt.Printf("[CASHFREE]   %s: [REDACTED]\n", key)
+			} else {
+				fmt.Printf("[CASHFREE]   %s: %s\n", key, value)
+			}
+		}
+	}
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
@@ -140,12 +152,13 @@ func (p *CashfreeProvider) CheckStatus(ctx context.Context, providerRefID string
 		return nil, fmt.Errorf("providerRefID is required")
 	}
 
-	url := strings.TrimRight(p.cfg.BaseURL, "/") + "/payout/transfers/" + providerRefID
+	path := "/payout/transfers/" + providerRefID
+	url := strings.TrimRight(p.cfg.BaseURL, "/") + path
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 	}
-	p.setHeaders(httpReq)
+	p.setHeaders(httpReq, nil, http.MethodGet, path)
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
@@ -203,12 +216,39 @@ func (p *CashfreeProvider) ValidateWebhookSignature(payload []byte, signature st
 	return hmac.Equal([]byte(expectedB64URL), []byte(sig))
 }
 
-func (p *CashfreeProvider) setHeaders(req *http.Request) {
+func (p *CashfreeProvider) setHeaders(req *http.Request, body []byte, method string, path string) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("x-client-id", p.cfg.ClientID)
 	req.Header.Set("x-client-secret", p.cfg.ClientSecret)
 	req.Header.Set("x-api-version", p.cfg.APIVersion)
+
+	// Cashfree requires HMAC-SHA256 signature for request authentication
+	// Signature is calculated on: method + path + request_body
+	if body != nil && len(body) > 0 {
+		sig := p.generateSignature(body, method, path)
+		fmt.Printf("[CASHFREE] Generated signature (hex): %s\n", sig)
+		// x-signature header for Cashfree API
+		req.Header.Set("x-signature", sig)
+		fmt.Printf("[CASHFREE] Headers set with x-signature header\n")
+	} else {
+		fmt.Printf("[CASHFREE] No body provided, skipping signature\n")
+	}
+}
+
+// generateSignature creates HMAC-SHA256 signature including method, path, and body
+func (p *CashfreeProvider) generateSignature(body []byte, method string, path string) string {
+	// Cashfree uses: HMAC-SHA256(method+path+body, client_secret) -> hex encoded
+	// Example: POST/payout/transfers{...json...}
+	message := method + path
+	message = message + string(body)
+
+	mac := hmac.New(sha256.New, []byte(p.cfg.ClientSecret))
+	mac.Write([]byte(message))
+	// Return hex encoded signature
+	sig := hex.EncodeToString(mac.Sum(nil))
+	fmt.Printf("[CASHFREE] Signature calc: method=%s, path=%s, bodyLen=%d, signature(hex)=%s\n", method, path, len(body), sig)
+	return sig
 }
 
 func buildCashfreeTransferRequest(req TransferRequest) (*cashfreeTransferReq, error) {

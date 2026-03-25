@@ -108,7 +108,7 @@ func (r *postgresPayoutRepository) ListPayoutMethodsByHostID(ctx context.Context
 func (r *postgresPayoutRepository) GetPrimaryPayoutMethod(ctx context.Context, hostID uuid.UUID) (*models.PayoutMethod, error) {
 	pm := &models.PayoutMethod{}
 	query := `SELECT id, host_id, type, bank_name, account_type, last_four_digits, account_number_encrypted, ifsc, beneficiary_name, upi_id, is_verified, is_primary, created_at, updated_at
-		FROM payout_methods WHERE host_id = $1 AND is_primary = true LIMIT 1`
+		FROM payout_methods WHERE (host_id = $1 OR (host_id IS NULL AND $1 = '00000000-0000-0000-0000-000000000000')) AND is_primary = true LIMIT 1`
 	err := r.db.QueryRowContext(ctx, query, hostID).Scan(
 		&pm.ID, &pm.HostID, &pm.Type, &pm.BankName, &pm.AccountType,
 		&pm.LastFourDigits, &pm.AccountNumberEncrypted, &pm.IFSC, &pm.BeneficiaryName,
@@ -164,7 +164,7 @@ func (r *postgresPayoutRepository) ListAdminPayoutMethods(ctx context.Context) (
 		       account_number_encrypted, ifsc, beneficiary_name, upi_id, 
 		       is_verified, is_primary, created_at, updated_at
 		FROM payout_methods
-		WHERE host_id = '00000000-0000-0000-0000-000000000000'
+		WHERE host_id IS NULL
 		ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -205,12 +205,12 @@ func (r *postgresPayoutRepository) SetAdminPrimary(ctx context.Context, methodID
 		}
 	}()
 
-	_, err = tx.ExecContext(ctx, `UPDATE payout_methods SET is_primary = false, updated_at = now() WHERE host_id = '00000000-0000-0000-0000-000000000000'`)
+	_, err = tx.ExecContext(ctx, `UPDATE payout_methods SET is_primary = false, updated_at = now() WHERE host_id IS NULL`)
 	if err != nil {
 		return err
 	}
 
-	_, err = tx.ExecContext(ctx, `UPDATE payout_methods SET is_primary = true, updated_at = now() WHERE id = $1 AND host_id = '00000000-0000-0000-0000-000000000000'`, methodID)
+	_, err = tx.ExecContext(ctx, `UPDATE payout_methods SET is_primary = true, updated_at = now() WHERE id = $1 AND host_id IS NULL`, methodID)
 	if err != nil {
 		return err
 	}

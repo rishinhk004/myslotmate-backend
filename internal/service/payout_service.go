@@ -140,7 +140,7 @@ func (s *payoutService) AddPayoutMethod(ctx context.Context, hostID uuid.UUID, r
 
 	pm := &models.PayoutMethod{
 		ID:                     uuid.New(),
-		HostID:                 hostID,
+		HostID:                 &hostID,
 		Type:                   req.Type,
 		BankName:               req.BankName,
 		AccountType:            req.AccountType,
@@ -188,7 +188,7 @@ func (s *payoutService) SetPrimaryMethod(ctx context.Context, hostID uuid.UUID, 
 		fmt.Printf("[PAYOUT] SetPrimaryMethod: method not found\n")
 		return errors.New("payout method not found")
 	}
-	if pm.HostID != hostID {
+	if pm.HostID == nil || *pm.HostID != hostID {
 		fmt.Printf("[PAYOUT] SetPrimaryMethod: method does not belong to host\n")
 		return errors.New("payout method does not belong to this host")
 	}
@@ -215,7 +215,7 @@ func (s *payoutService) DeletePayoutMethod(ctx context.Context, hostID uuid.UUID
 		fmt.Printf("[PAYOUT] DeletePayoutMethod: method not found\n")
 		return errors.New("payout method not found")
 	}
-	if pm.HostID != hostID {
+	if pm.HostID == nil || *pm.HostID != hostID {
 		fmt.Printf("[PAYOUT] DeletePayoutMethod: method does not belong to host\n")
 		return errors.New("payout method does not belong to this host")
 	}
@@ -316,7 +316,7 @@ func (s *payoutService) RequestWithdrawal(ctx context.Context, hostID uuid.UUID,
 		fmt.Printf("[PAYOUT] No payout method available\n")
 		return nil, errors.New("no payout method found; please add a bank account or UPI")
 	}
-	if payoutMethod.HostID != hostID {
+	if payoutMethod.HostID == nil || *payoutMethod.HostID != hostID {
 		fmt.Printf("[PAYOUT] Payout method does not belong to host\n")
 		return nil, errors.New("payout method does not belong to this host")
 	}
@@ -326,7 +326,13 @@ func (s *payoutService) RequestWithdrawal(ctx context.Context, hostID uuid.UUID,
 	}
 	fmt.Printf("[PAYOUT] Payout method selected: methodID=%s, type=%s, verified=true\n", payoutMethod.ID, payoutMethod.Type)
 
-	// 5. Create withdrawal ledger entry (immutable record of withdrawal request)
+	// 5. Generate idempotency key if not provided (must happen BEFORE ledger creation)
+	idempotencyKey := req.IdempotencyKey
+	if idempotencyKey == "" {
+		idempotencyKey = fmt.Sprintf("payout_%s_%d", hostID, time.Now().UnixNano())
+	}
+
+	// 6. Create withdrawal ledger entry (immutable record of withdrawal request)
 	fmt.Printf("[PAYOUT] Creating withdrawal ledger entry: accountID=%s, amount=%d\n", account.ID, req.AmountCents)
 
 	withdrawalLedger := &models.TransactionLedger{
@@ -336,7 +342,7 @@ func (s *payoutService) RequestWithdrawal(ctx context.Context, hostID uuid.UUID,
 		AmountCents:    -req.AmountCents, // NEGATIVE = debit from host
 		ReferenceID:    &account.ID,
 		ReferenceType:  strPtr("account"),
-		IdempotencyKey: strPtr(req.IdempotencyKey),
+		IdempotencyKey: strPtr(idempotencyKey),
 		Description:    strPtr(fmt.Sprintf("Withdrawal request to %s", payoutMethod.Type)),
 		Status:         models.LedgerStatusPending, // Pending until provider confirms
 		CreatedAt:      time.Now(),
@@ -350,11 +356,7 @@ func (s *payoutService) RequestWithdrawal(ctx context.Context, hostID uuid.UUID,
 	}
 	fmt.Printf("[PAYOUT] Withdrawal ledger entry created successfully\n")
 
-	// 6. Create payment record
-	idempotencyKey := req.IdempotencyKey
-	if idempotencyKey == "" {
-		idempotencyKey = fmt.Sprintf("payout_%s_%d", hostID, time.Now().UnixNano())
-	}
+	// 7. Create payment record
 	displayRef := fmt.Sprintf("TXN-%05d", time.Now().UnixMilli()%100000)
 
 	payment := &models.Payment{
@@ -382,7 +384,7 @@ func (s *payoutService) RequestWithdrawal(ctx context.Context, hostID uuid.UUID,
 			AmountCents:        req.AmountCents, // POSITIVE = credit back
 			ReferenceID:        &withdrawalLedger.ID,
 			ReferenceType:      strPtr("ledger"),
-			IdempotencyKey:     strPtr(fmt.Sprintf("%s_reversal", req.IdempotencyKey)),
+			IdempotencyKey:     strPtr(fmt.Sprintf("%s_reversal", idempotencyKey)),
 			Description:        strPtr("Reversal - payment record creation failed"),
 			Status:             models.LedgerStatusCompleted,
 			ReversalOfLedgerID: &withdrawalLedger.ID,
@@ -394,7 +396,7 @@ func (s *payoutService) RequestWithdrawal(ctx context.Context, hostID uuid.UUID,
 	}
 	fmt.Printf("[PAYOUT] Payment record created successfully\n")
 
-	// 7. Call external provider (async in production, sync with mock)
+	// 8. Call external provider (async in production, sync with mock)
 	transferReq := payout.TransferRequest{
 		PaymentID:      payment.ID,
 		AmountCents:    req.AmountCents,
@@ -441,7 +443,7 @@ func (s *payoutService) RequestWithdrawal(ctx context.Context, hostID uuid.UUID,
 
 	fmt.Printf("[PAYOUT] Provider response: status=%s, providerRefID=%s, error=%s\n", resp.Status, resp.ProviderRefID, resp.Error)
 
-	// 8. Handle provider response
+	// 9. Handle provider response
 	if resp.Status == "completed" {
 		fmt.Printf("[PAYOUT] Payment completed successfully by provider\n")
 		_ = s.paymentRepo.UpdateStatus(ctx, payment.ID, models.PaymentStatusCompleted, nil)
@@ -712,7 +714,7 @@ func (s *payoutService) AddAdminPayoutMethod(ctx context.Context, req AddPayoutM
 
 	pm := &models.PayoutMethod{
 		ID:                     uuid.New(),
-		HostID:                 uuid.Nil, // Platform account
+		HostID:                 nil, // Platform account - no host
 		Type:                   req.Type,
 		BankName:               req.BankName,
 		AccountType:            req.AccountType,
@@ -754,7 +756,7 @@ func (s *payoutService) SetAdminPrimaryMethod(ctx context.Context, methodID uuid
 	if pm == nil {
 		return errors.New("payout method not found")
 	}
-	if pm.HostID != uuid.Nil {
+	if pm.HostID != nil {
 		return errors.New("method does not belong to platform")
 	}
 
@@ -771,7 +773,7 @@ func (s *payoutService) DeleteAdminPayoutMethod(ctx context.Context, methodID uu
 	if pm == nil {
 		return errors.New("payout method not found")
 	}
-	if pm.HostID != uuid.Nil {
+	if pm.HostID != nil {
 		return errors.New("method does not belong to platform")
 	}
 	if pm.IsPrimary {
