@@ -452,7 +452,7 @@ myslotmate-backend/
 | `key` | VARCHAR | UNIQUE |
 | `value` | JSONB | |
 
-> Seeded: `platform_fee → { host_percentage: 85, platform_percentage: 15 }`
+> Seeded: `platform_fee → { host_percentage: 70, platform_percentage: 30 }`
 
 #### `reviews`
 | Column | Type | Constraints |

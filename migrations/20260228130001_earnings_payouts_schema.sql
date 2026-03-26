@@ -15,9 +15,9 @@ CREATE TABLE IF NOT EXISTS platform_settings (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Seed default platform fee (85% host, 15% platform)
+-- Seed default platform fee (70% host, 30% platform)
 INSERT INTO platform_settings (key, value) VALUES
-  ('platform_fee', '{"host_percentage": 85, "platform_percentage": 15}')
+  ('platform_fee', '{"host_percentage": 70, "platform_percentage": 30}')
 ON CONFLICT (key) DO NOTHING;
 
 -- ---------------------------------------------------------------------------

@@ -18,6 +18,6 @@ type PlatformSettings struct {
 
 // PlatformFeeConfig is the structure for the "platform_fee" key.
 type PlatformFeeConfig struct {
-	HostPercentage     int `json:"host_percentage"`     // e.g. 85
-	PlatformPercentage int `json:"platform_percentage"` // e.g. 15
+	HostPercentage     int `json:"host_percentage"`     // e.g. 70
+	PlatformPercentage int `json:"platform_percentage"` // e.g. 30
 }

@@ -271,8 +271,8 @@ func (r *postgresPayoutRepository) GetPlatformFeeConfig(ctx context.Context) (*m
 	err := r.db.QueryRowContext(ctx, query).Scan(&raw)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			// Return default 85/15 if not seeded
-			return &models.PlatformFeeConfig{HostPercentage: 85, PlatformPercentage: 15}, nil
+			// Return default 70/30 if not seeded
+			return &models.PlatformFeeConfig{HostPercentage: 70, PlatformPercentage: 30}, nil
 		}
 		return nil, err
 	}
