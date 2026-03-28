@@ -72,6 +72,7 @@ func (c *EventController) RegisterRoutes(r chi.Router) {
 		r.Get("/", c.ListPublishedEvents)
 		r.Post("/", c.CreateEvent)
 		r.Put("/{eventID}", c.UpdateEvent)
+		r.Delete("/{eventID}", c.DeleteEvent)
 		r.Get("/{eventID}", c.GetEvent)
 		r.Get("/host/{hostID}", c.GetHostEvents)
 		r.Get("/host/{hostID}/filtered", c.GetHostEventsFiltered)
@@ -260,11 +261,46 @@ func (c *EventController) UpdateEvent(w http.ResponseWriter, r *http.Request) {
 			RespondError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if err.Error() == "unauthorized: you do not own this event" {
+			RespondError(w, http.StatusForbidden, err.Error())
+			return
+		}
 		RespondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	RespondSuccess(w, http.StatusOK, evt)
+}
+
+func (c *EventController) DeleteEvent(w http.ResponseWriter, r *http.Request) {
+	eventID, err := uuid.Parse(chi.URLParam(r, "eventID"))
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid event ID")
+		return
+	}
+
+	var body struct {
+		HostID uuid.UUID `json:"host_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	if err := c.eventService.DeleteEvent(r.Context(), eventID, body.HostID); err != nil {
+		if err.Error() == "event not found" {
+			RespondError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		if err.Error() == "unauthorized: you do not own this event" {
+			RespondError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (c *EventController) GetEvent(w http.ResponseWriter, r *http.Request) {

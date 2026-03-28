@@ -13,6 +13,7 @@ const (
 	HostApproved         EventName = "host_approved"
 	HostRejected         EventName = "host_rejected"
 	EventCreated         EventName = "event_created"
+	EventDeleted         EventName = "event_deleted"
 	BookingCreated       EventName = "booking_created"
 	BookingConfirmed     EventName = "booking_confirmed"
 	BookingCancelled     EventName = "booking_cancelled"

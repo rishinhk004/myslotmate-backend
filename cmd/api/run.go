@@ -165,7 +165,7 @@ func main() {
 
 	userService := service.NewUserService(userRepo, hostRepo, savedExpRepo, accountRepo, paymentRepo, workerPool, dispatcher, aadharProvider, paymentProvider)
 	hostService := service.NewHostService(hostRepo, userRepo, eventRepo, bookingRepo, reviewRepo, payoutRepo, accountRepo, dispatcher)
-	eventService := service.NewEventService(eventRepo, bookingRepo, dispatcher)
+	eventService := service.NewEventService(eventRepo, bookingRepo, accountRepo, ledgerRepo, dispatcher)
 	bookingService := service.NewBookingService(bookingRepo, eventRepo, accountRepo, paymentRepo, payoutRepo, hostRepo, ledgerRepo, dispatcher)
 	reviewService := service.NewReviewService(reviewRepo, eventRepo, hostRepo, dispatcher)
 	inboxService := service.NewInboxService(inboxRepo, eventRepo, socketService)

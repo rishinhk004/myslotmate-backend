@@ -1098,7 +1098,10 @@ paths:
           $ref: "#/components/responses/InternalError"
     put:
       tags: [Events]
-      summary: Update an event
+      summary: Update an event (host only)
+      description: |
+        Update event details. Only the host who created the event can update it.
+        Provide `host_id` in the request body for ownership verification.
       operationId: updateEvent
       parameters:
         - $ref: "#/components/parameters/EventIDPath"
@@ -1110,13 +1113,51 @@ paths:
               $ref: "#/components/schemas/EventUpdateRequest"
       responses:
         "200":
-          description: Event updated
+          description: Event updated successfully
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/SuccessResponse_Event"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [Events]
+      summary: Delete an event (host only)
+      description: |
+        Delete an event and automatically refund all registered users.
+        
+        When an event is deleted:
+        - All non-cancelled bookings are refunded
+        - Refund amounts are credited back to users' account balances
+        - Immutable ledger entries are created for audit trail (refund_credit type)
+        - Booking statuses are updated to 'refunded'
+        - Only the host who created the event can delete it.
+        
+        Provide `host_id` in the request body for ownership verification.
+      operationId: deleteEvent
+      parameters:
+        - $ref: "#/components/parameters/EventIDPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteEventRequest"
+      responses:
+        "204":
+          description: Event deleted successfully with all bookings refunded
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -2227,6 +2268,13 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
 
+    Forbidden:
+      description: Forbidden – insufficient permissions or authorization failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
     NotFound:
       description: Resource not found
       content:
@@ -2687,6 +2735,16 @@ components:
           nullable: true
         cancellation_policy:
           $ref: "#/components/schemas/CancellationPolicy"
+
+    DeleteEventRequest:
+      type: object
+      required: [host_id]
+      description: Request body for deleting an event. Triggers automatic refund of all bookings.
+      properties:
+        host_id:
+          type: string
+          format: uuid
+          description: Host UUID for ownership verification. Only the event creator can delete.
 
     CreateBookingRequest:
       type: object

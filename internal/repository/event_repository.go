@@ -15,6 +15,7 @@ import (
 type EventRepository interface {
 	Create(ctx context.Context, event *models.Event) error
 	Update(ctx context.Context, event *models.Event) error
+	Delete(ctx context.Context, id uuid.UUID) error
 	GetByID(ctx context.Context, id uuid.UUID) (*models.Event, error)
 	ListByHostID(ctx context.Context, hostID uuid.UUID) ([]*models.Event, error)
 	ListByHostIDFiltered(ctx context.Context, hostID uuid.UUID, status *models.EventStatus, search string, sortBy string, limit, offset int) ([]*models.Event, error)
@@ -131,6 +132,12 @@ func (r *postgresEventRepository) Update(ctx context.Context, event *models.Even
 		event.AISuggestion, event.AvgRating, event.TotalBookings,
 		event.ID,
 	)
+	return err
+}
+
+func (r *postgresEventRepository) Delete(ctx context.Context, id uuid.UUID) error {
+	query := `DELETE FROM events WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, id)
 	return err
 }
 

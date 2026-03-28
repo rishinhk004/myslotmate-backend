@@ -17,6 +17,7 @@ import (
 type EventService interface {
 	CreateEvent(ctx context.Context, hostID uuid.UUID, req EventCreateRequest) (*models.Event, error)
 	UpdateEvent(ctx context.Context, eventID uuid.UUID, hostID uuid.UUID, req EventUpdateRequest) (*models.Event, error)
+	DeleteEvent(ctx context.Context, eventID uuid.UUID, hostID uuid.UUID) error
 	GetEvent(ctx context.Context, eventID uuid.UUID) (*models.Event, error)
 	GetHostEvents(ctx context.Context, hostID uuid.UUID) ([]*models.Event, error)
 	GetHostEventsFiltered(ctx context.Context, hostID uuid.UUID, status *models.EventStatus, search string, sortBy string, limit, offset int) ([]*models.Event, error)
@@ -86,15 +87,25 @@ type EventUpdateRequest struct {
 type eventService struct {
 	eventRepo   repository.EventRepository
 	bookingRepo repository.BookingRepository
+	accountRepo repository.AccountRepository
+	ledgerRepo  repository.TransactionLedgerRepository
 	dispatcher  *event.Dispatcher
 }
 
 var ErrInvalidEventMood = errors.New("invalid event mood")
 
-func NewEventService(er repository.EventRepository, br repository.BookingRepository, d *event.Dispatcher) EventService {
+func NewEventService(
+	er repository.EventRepository,
+	br repository.BookingRepository,
+	ar repository.AccountRepository,
+	lr repository.TransactionLedgerRepository,
+	d *event.Dispatcher,
+) EventService {
 	return &eventService{
 		eventRepo:   er,
 		bookingRepo: br,
+		accountRepo: ar,
+		ledgerRepo:  lr,
 		dispatcher:  d,
 	}
 }
@@ -254,6 +265,97 @@ func (s *eventService) UpdateEvent(ctx context.Context, eventID uuid.UUID, hostI
 		return nil, err
 	}
 	return evt, nil
+}
+
+func (s *eventService) DeleteEvent(ctx context.Context, eventID uuid.UUID, hostID uuid.UUID) error {
+	evt, err := s.eventRepo.GetByID(ctx, eventID)
+	if err != nil {
+		return err
+	}
+	if evt == nil {
+		return errors.New("event not found")
+	}
+	if evt.HostID != hostID {
+		return errors.New("unauthorized: you do not own this event")
+	}
+
+	// Get all bookings for this event to refund users
+	bookings, err := s.bookingRepo.ListByEventID(ctx, eventID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch bookings for refund: %w", err)
+	}
+
+	// Process refunds for each booking
+	for _, booking := range bookings {
+		// Skip if already cancelled or refunded
+		if booking.Status == models.BookingStatusCancelled || booking.Status == models.BookingStatusRefunded {
+			continue
+		}
+
+		// Refund amount should equal the original booking amount
+		refundAmount := int64(0)
+		if booking.AmountCents != nil {
+			refundAmount = *booking.AmountCents
+		}
+
+		if refundAmount <= 0 {
+			break // Skip bookings with no amount to refund
+		}
+
+		// 1. Get or create user account
+		userAccount, err := s.accountRepo.GetByOwner(ctx, models.AccountOwnerUser, booking.UserID)
+		if err != nil {
+			fmt.Printf("[REFUND] Failed to fetch user account for user %s: %v\n", booking.UserID, err)
+			continue
+		}
+
+		if userAccount == nil {
+			fmt.Printf("[REFUND] User account not found for user %s (booking %s), skipping\n", booking.UserID, booking.ID)
+			continue
+		}
+
+		// 2. Create refund ledger entry (credit user's account)
+		now := time.Now()
+		refundLedger := &models.TransactionLedger{
+			ID:            uuid.New(),
+			AccountID:     userAccount.ID,
+			Type:          models.LedgerTypeRefundCredit,
+			AmountCents:   refundAmount, // Positive = credit
+			ReferenceID:   &booking.ID,
+			ReferenceType: strPtr("booking"),
+			Description:   strPtr(fmt.Sprintf("Event cancelled by host. Full refund for booking %s", booking.ID)),
+			Status:        models.LedgerStatusCompleted,
+			CreatedAt:     now,
+		}
+
+		_, err = s.ledgerRepo.Create(ctx, refundLedger)
+		if err != nil {
+			fmt.Printf("[REFUND] Failed to create refund ledger entry for booking %s: %v\n", booking.ID, err)
+			continue
+		}
+
+		// 3. Update user account balance (credit the refund amount)
+		if err := s.accountRepo.Credit(ctx, userAccount.ID, refundAmount); err != nil {
+			fmt.Printf("[REFUND] Failed to credit user account for booking %s: %v\n", booking.ID, err)
+			continue
+		}
+
+		// 4. Update booking status to refunded
+		if err := s.bookingRepo.UpdateStatus(ctx, booking.ID, models.BookingStatusRefunded); err != nil {
+			fmt.Printf("[REFUND] Failed to update booking status to refunded for booking %s: %v\n", booking.ID, err)
+		}
+
+		fmt.Printf("[REFUND] Successfully refunded %d cents to user %s for booking %s\n", refundAmount, booking.UserID, booking.ID)
+	}
+
+	// 5. Delete the event
+	if err := s.eventRepo.Delete(ctx, eventID); err != nil {
+		return err
+	}
+
+	s.dispatcher.Publish(event.EventDeleted, evt)
+	fmt.Printf("[EVENT] Event %s deleted successfully with all bookings refunded\n", eventID)
+	return nil
 }
 
 func (s *eventService) GetEvent(ctx context.Context, eventID uuid.UUID) (*models.Event, error) {
