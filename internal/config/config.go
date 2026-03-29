@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 
 	"github.com/joho/godotenv"
 )
@@ -17,6 +18,24 @@ type S3Config struct {
 	Region    string
 	AccessKey string
 	SecretKey string
+}
+
+// TwilioConfig holds Twilio credentials for SMS and WhatsApp messaging.
+type TwilioConfig struct {
+	AccountSID       string
+	AuthToken        string
+	PhoneNumber      string // Twilio phone number for SMS
+	WhatsappNumber   string // Twilio WhatsApp number (usually +1... number)
+	TemplateEventSID string // Event reminder template SID (optional)
+}
+
+// SMTPConfig holds SMTP server settings for sending emails.
+type SMTPConfig struct {
+	Host     string
+	Port     int
+	User     string
+	Password string
+	FromName string // Sender name (e.g., "MySlotMate")
 }
 
 // DatabaseConfig holds PostgreSQL connection settings.
@@ -66,6 +85,8 @@ type Config struct {
 	Razorpay          RazorpayConfig
 	Cashfree          CashfreeConfig
 	S3                S3Config
+	Twilio            TwilioConfig
+	SMTP              SMTPConfig
 }
 
 // Load reads configuration from environment variables (optionally via .env).
@@ -114,6 +135,20 @@ func Load() (*Config, error) {
 			WebhookSecret: getEnv("CASHFREE_WEBHOOK_SECRET", ""),
 			APIVersion:    getEnv("CASHFREE_API_VERSION", "2024-01-01"),
 		},
+		Twilio: TwilioConfig{
+			AccountSID:       getEnv("TWILIO_ACCOUNT_SID", ""),
+			AuthToken:        getEnv("TWILIO_AUTH_TOKEN", ""),
+			PhoneNumber:      getEnv("TWILIO_PHONE_NUMBER", ""),
+			WhatsappNumber:   getEnv("TWILIO_WHATSAPP_NUMBER", ""),
+			TemplateEventSID: getEnv("TWILIO_TEMPLATE_EVENT_SID", ""),
+		},
+		SMTP: SMTPConfig{
+			Host:     getEnv("SMTP_HOST", ""),
+			Port:     parseEnvInt("SMTP_PORT", 587),
+			User:     getEnv("SMTP_USER", ""),
+			Password: getEnv("SMTP_PASSWORD", ""),
+			FromName: getEnv("SMTP_FROM_NAME", "MySlotMate"),
+		},
 	}
 
 	return cfg, nil
@@ -124,4 +159,16 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func parseEnvInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }

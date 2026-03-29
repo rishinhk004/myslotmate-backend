@@ -1,0 +1,194 @@
+package notification
+
+import (
+	"context"
+	"fmt"
+	"myslotmate-backend/internal/config"
+	"myslotmate-backend/internal/models"
+	"myslotmate-backend/internal/repository"
+
+	"github.com/twilio/twilio-go"
+	twilioapiv2010 "github.com/twilio/twilio-go/rest/api/v2010"
+)
+
+// TwilioNotificationService handles SMS and WhatsApp notifications via Twilio
+type TwilioNotificationService struct {
+	cfg         *config.TwilioConfig
+	client      *twilio.RestClient
+	bookingRepo repository.BookingRepository
+	eventRepo   repository.EventRepository
+	userRepo    repository.UserRepository
+	emailSvc    *EmailService
+}
+
+// NotificationService interface defines methods for sending notifications
+type NotificationService interface {
+	SendBookingConfirmationWhatsapp(ctx context.Context, booking *models.Booking, user *models.User, event *models.Event) error
+	SendBookingConfirmationEmail(ctx context.Context, booking *models.Booking, user *models.User, event *models.Event) error
+	SendEventReminderWhatsapp(ctx context.Context, booking *models.Booking, user *models.User, event *models.Event) error
+	SendEventReminderEmail(ctx context.Context, booking *models.Booking, user *models.User, event *models.Event) error
+}
+
+// NewTwilioNotificationService creates a new Twilio notification service
+func NewTwilioNotificationService(cfg *config.TwilioConfig, emailCfg *config.SMTPConfig, bookingRepo repository.BookingRepository, eventRepo repository.EventRepository, userRepo repository.UserRepository) *TwilioNotificationService {
+	client := twilio.NewRestClientWithParams(twilio.ClientParams{
+		Username: cfg.AccountSID,
+		Password: cfg.AuthToken,
+	})
+
+	return &TwilioNotificationService{
+		cfg:         cfg,
+		client:      client,
+		bookingRepo: bookingRepo,
+		eventRepo:   eventRepo,
+		userRepo:    userRepo,
+		emailSvc:    NewEmailService(emailCfg),
+	}
+}
+
+// SendBookingConfirmationWhatsapp sends booking confirmation via WhatsApp
+// Message includes event name, time, and booking details
+func (s *TwilioNotificationService) SendBookingConfirmationWhatsapp(ctx context.Context, booking *models.Booking, user *models.User, event *models.Event) error {
+	if s.cfg.WhatsappNumber == "" || user.PhnNumber == "" {
+		return fmt.Errorf("WhatsApp number not configured or user phone not available")
+	}
+
+	// Format message with booking details
+	message := fmt.Sprintf(
+		"🎉 Booking Confirmed!\n\nEvent: %s\nTime: %s\nTickets: %d\n\nThank you for booking with MySlotMate!",
+		event.Title,
+		event.Time.Format("Jan 2, 2006 3:04 PM"),
+		booking.Quantity,
+	)
+
+	// Send WhatsApp message via Twilio
+	params := &twilioapiv2010.CreateMessageParams{}
+	params.SetFrom("whatsapp:" + s.cfg.WhatsappNumber)
+	params.SetTo("whatsapp:" + user.PhnNumber)
+	params.SetBody(message)
+
+	_, err := s.client.Api.CreateMessage(params)
+	if err != nil {
+		return fmt.Errorf("failed to send WhatsApp message: %w", err)
+	}
+
+	// Mark notification as sent in database
+	if err := s.bookingRepo.MarkWhatsappNotificationSent(ctx, booking.ID); err != nil {
+		return fmt.Errorf("failed to mark WhatsApp notification as sent: %w", err)
+	}
+
+	return nil
+}
+
+// SendBookingConfirmationEmail sends booking confirmation via email
+func (s *TwilioNotificationService) SendBookingConfirmationEmail(ctx context.Context, booking *models.Booking, user *models.User, event *models.Event) error {
+	if user.Email == "" {
+		return fmt.Errorf("user email not available")
+	}
+
+	// Send email
+	err := s.emailSvc.SendBookingConfirmationEmail(
+		user.Email,
+		user.Name,
+		event.Title,
+		event.Time.Format("Jan 2, 2006 3:04 PM"),
+		fmt.Sprintf("%d", booking.Quantity),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to send confirmation email: %w", err)
+	}
+
+	// Mark notification as sent in database
+	if err := s.bookingRepo.MarkEmailNotificationSent(ctx, booking.ID); err != nil {
+		return fmt.Errorf("failed to mark email notification as sent: %w", err)
+	}
+
+	return nil
+}
+
+// SendEventReminderWhatsapp sends event reminder via WhatsApp
+// Called 1-2 hours before event start
+func (s *TwilioNotificationService) SendEventReminderWhatsapp(ctx context.Context, booking *models.Booking, user *models.User, event *models.Event) error {
+	if s.cfg.WhatsappNumber == "" || user.PhnNumber == "" {
+		return fmt.Errorf("WhatsApp number not configured or user phone not available")
+	}
+
+	// Format reminder message
+	message := fmt.Sprintf(
+		"⏰ Event Starting Soon!\n\nEvent: %s\nTime: %s\n\nYour booking is confirmed. See you soon!",
+		event.Title,
+		event.Time.Format("Jan 2, 2006 3:04 PM"),
+	)
+
+	// Send WhatsApp reminder via Twilio
+	params := &twilioapiv2010.CreateMessageParams{}
+	params.SetFrom("whatsapp:" + s.cfg.WhatsappNumber)
+	params.SetTo("whatsapp:" + user.PhnNumber)
+	params.SetBody(message)
+
+	_, err := s.client.Api.CreateMessage(params)
+	if err != nil {
+		return fmt.Errorf("failed to send reminder WhatsApp: %w", err)
+	}
+
+	// Mark reminder notification as sent in database
+	if err := s.bookingRepo.MarkWhatsappReminderNotificationSent(ctx, booking.ID); err != nil {
+		return fmt.Errorf("failed to mark reminder WhatsApp as sent: %w", err)
+	}
+
+	return nil
+}
+
+// SendEventReminderEmail sends event reminder via email
+// Called 1-2 hours before event start
+func (s *TwilioNotificationService) SendEventReminderEmail(ctx context.Context, booking *models.Booking, user *models.User, event *models.Event) error {
+	if user.Email == "" {
+		return fmt.Errorf("user email not available")
+	}
+
+	// Send email reminder
+	err := s.emailSvc.SendEventReminderEmail(
+		user.Email,
+		user.Name,
+		event.Title,
+		event.Time.Format("Jan 2, 2006 3:04 PM"),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to send reminder email: %w", err)
+	}
+
+	// Mark reminder notification as sent in database
+	if err := s.bookingRepo.MarkEmailReminderNotificationSent(ctx, booking.ID); err != nil {
+		return fmt.Errorf("failed to mark reminder email as sent: %w", err)
+	}
+
+	return nil
+}
+
+// SendReminderNotifications processes pending reminder notifications (called by scheduler)
+func (s *TwilioNotificationService) SendReminderNotifications(ctx context.Context, limit int) error {
+	// Get pending reminders
+	bookings, err := s.bookingRepo.ListPendingReminderNotifications(ctx, limit)
+	if err != nil {
+		return fmt.Errorf("failed to fetch pending reminders: %w", err)
+	}
+
+	for _, booking := range bookings {
+		// Fetch related data
+		user, err := s.userRepo.GetByID(ctx, booking.UserID)
+		if err != nil || user == nil {
+			continue
+		}
+
+		event, err := s.eventRepo.GetByID(ctx, booking.EventID)
+		if err != nil || event == nil {
+			continue
+		}
+
+		// Send both WhatsApp and Email reminders
+		_ = s.SendEventReminderWhatsapp(ctx, booking, user, event)
+		_ = s.SendEventReminderEmail(ctx, booking, user, event)
+	}
+
+	return nil
+}

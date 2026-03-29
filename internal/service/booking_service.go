@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"myslotmate-backend/internal/lib/event"
+	"myslotmate-backend/internal/lib/notification"
 	"myslotmate-backend/internal/models"
 	"myslotmate-backend/internal/repository"
 
@@ -27,14 +28,16 @@ type BookingCreateRequest struct {
 }
 
 type bookingService struct {
-	bookingRepo repository.BookingRepository
-	eventRepo   repository.EventRepository
-	accountRepo repository.AccountRepository
-	paymentRepo repository.PaymentRepository
-	payoutRepo  repository.PayoutRepository
-	hostRepo    repository.HostRepository
-	ledgerRepo  repository.TransactionLedgerRepository
-	dispatcher  *event.Dispatcher
+	bookingRepo         repository.BookingRepository
+	eventRepo           repository.EventRepository
+	accountRepo         repository.AccountRepository
+	paymentRepo         repository.PaymentRepository
+	payoutRepo          repository.PayoutRepository
+	hostRepo            repository.HostRepository
+	userRepo            repository.UserRepository
+	ledgerRepo          repository.TransactionLedgerRepository
+	dispatcher          *event.Dispatcher
+	notificationService notification.NotificationService
 }
 
 func NewBookingService(
@@ -44,18 +47,22 @@ func NewBookingService(
 	pmr repository.PaymentRepository,
 	pr repository.PayoutRepository,
 	hr repository.HostRepository,
+	ur repository.UserRepository,
 	lr repository.TransactionLedgerRepository,
 	d *event.Dispatcher,
+	ns notification.NotificationService,
 ) BookingService {
 	return &bookingService{
-		bookingRepo: br,
-		eventRepo:   er,
-		accountRepo: ar,
-		paymentRepo: pmr,
-		payoutRepo:  pr,
-		hostRepo:    hr,
-		ledgerRepo:  lr,
-		dispatcher:  d,
+		bookingRepo:         br,
+		eventRepo:           er,
+		accountRepo:         ar,
+		paymentRepo:         pmr,
+		payoutRepo:          pr,
+		hostRepo:            hr,
+		userRepo:            ur,
+		ledgerRepo:          lr,
+		dispatcher:          d,
+		notificationService: ns,
 	}
 }
 
@@ -339,6 +346,35 @@ func (s *bookingService) ConfirmBooking(ctx context.Context, bookingID uuid.UUID
 		fmt.Printf("[BOOKING] ERROR: IncrementBookingCount failed: %v\n", err)
 		// Non-critical — booking already confirmed, counter reconciliation can happen in background
 	}
+
+	// Send booking confirmation notification (async, non-blocking)
+	fmt.Printf("[BOOKING] ConfirmBooking: sending notifications\n")
+	go func() {
+		// Fetch user and event for notification
+		user, err := s.userRepo.GetByID(context.Background(), booking.UserID)
+		if err != nil || user == nil {
+			fmt.Printf("[BOOKING] ERROR: Failed to fetch user for notification: %v\n", err)
+			return
+		}
+
+		evt, err := s.eventRepo.GetByID(context.Background(), booking.EventID)
+		if err != nil || evt == nil {
+			fmt.Printf("[BOOKING] ERROR: Failed to fetch event for notification: %v\n", err)
+			return
+		}
+
+		// Send WhatsApp confirmation notification
+		if err := s.notificationService.SendBookingConfirmationWhatsapp(context.Background(), booking, user, evt); err != nil {
+			fmt.Printf("[BOOKING] ERROR: Failed to send WhatsApp notification: %v\n", err)
+			// Non-critical — continue anyway
+		}
+
+		// Send Email confirmation notification
+		if err := s.notificationService.SendBookingConfirmationEmail(context.Background(), booking, user, evt); err != nil {
+			fmt.Printf("[BOOKING] ERROR: Failed to send Email notification: %v\n", err)
+			// Non-critical — continue anyway
+		}
+	}()
 
 	fmt.Printf("[BOOKING] ConfirmBooking: SUCCESS\n")
 	s.dispatcher.Publish(event.BookingConfirmed, booking)

@@ -18,6 +18,11 @@ type BookingRepository interface {
 	UpdateStatus(ctx context.Context, id uuid.UUID, status models.BookingStatus) error
 	ListRecentCancelledByEventIDs(ctx context.Context, eventIDs []uuid.UUID, limit int) ([]*models.Booking, error)
 	CountConfirmedByEventIDs(ctx context.Context, eventIDs []uuid.UUID) (int, error)
+	MarkWhatsappNotificationSent(ctx context.Context, id uuid.UUID) error
+	MarkEmailNotificationSent(ctx context.Context, id uuid.UUID) error
+	MarkEmailReminderNotificationSent(ctx context.Context, id uuid.UUID) error
+	MarkWhatsappReminderNotificationSent(ctx context.Context, id uuid.UUID) error
+	ListPendingReminderNotifications(ctx context.Context, limit int) ([]*models.Booking, error)
 }
 
 type postgresBookingRepository struct {
@@ -30,23 +35,23 @@ func NewBookingRepository(db *sql.DB) BookingRepository {
 
 func (r *postgresBookingRepository) Create(ctx context.Context, booking *models.Booking) error {
 	query := `
-		INSERT INTO bookings (id, event_id, user_id, quantity, status, payment_id, idempotency_key, amount_cents, service_fee_cents, net_earning_cents, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		INSERT INTO bookings (id, event_id, user_id, quantity, status, payment_id, idempotency_key, amount_cents, service_fee_cents, net_earning_cents, notification_sent_whatsapp, notification_sent_email, reminder_notification_sent_email, reminder_notification_sent_whatsapp, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 	`
 	if booking.ID == uuid.Nil {
 		booking.ID = uuid.New()
 	}
 	_, err := r.db.ExecContext(ctx, query,
-		booking.ID, booking.EventID, booking.UserID, booking.Quantity, booking.Status, booking.PaymentID, booking.IdempotencyKey, booking.AmountCents, booking.ServiceFeeCents, booking.NetEarningCents, booking.CreatedAt, booking.UpdatedAt,
+		booking.ID, booking.EventID, booking.UserID, booking.Quantity, booking.Status, booking.PaymentID, booking.IdempotencyKey, booking.AmountCents, booking.ServiceFeeCents, booking.NetEarningCents, booking.NotificationSentWhatsapp, booking.NotificationSentEmail, booking.ReminderNotificationSentEmail, booking.ReminderNotificationSentWhatsapp, booking.CreatedAt, booking.UpdatedAt,
 	)
 	return err
 }
 
 func (r *postgresBookingRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Booking, error) {
 	b := &models.Booking{}
-	query := `SELECT id, event_id, user_id, quantity, status, payment_id, idempotency_key, amount_cents, service_fee_cents, net_earning_cents, created_at, updated_at, cancelled_at FROM bookings WHERE id = $1`
+	query := `SELECT id, event_id, user_id, quantity, status, payment_id, idempotency_key, amount_cents, service_fee_cents, net_earning_cents, created_at, updated_at, cancelled_at, notification_sent_whatsapp, notification_sent_email, reminder_notification_sent_email, reminder_notification_sent_at, reminder_notification_sent_whatsapp, reminder_whatsapp_sent_at FROM bookings WHERE id = $1`
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
-		&b.ID, &b.EventID, &b.UserID, &b.Quantity, &b.Status, &b.PaymentID, &b.IdempotencyKey, &b.AmountCents, &b.ServiceFeeCents, &b.NetEarningCents, &b.CreatedAt, &b.UpdatedAt, &b.CancelledAt,
+		&b.ID, &b.EventID, &b.UserID, &b.Quantity, &b.Status, &b.PaymentID, &b.IdempotencyKey, &b.AmountCents, &b.ServiceFeeCents, &b.NetEarningCents, &b.CreatedAt, &b.UpdatedAt, &b.CancelledAt, &b.NotificationSentWhatsapp, &b.NotificationSentEmail, &b.ReminderNotificationSentEmail, &b.ReminderNotificationSentAt, &b.ReminderNotificationSentWhatsapp, &b.ReminderWhatsappSentAt,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -58,7 +63,7 @@ func (r *postgresBookingRepository) GetByID(ctx context.Context, id uuid.UUID) (
 }
 
 func (r *postgresBookingRepository) ListByUserID(ctx context.Context, userID uuid.UUID) ([]*models.Booking, error) {
-	query := `SELECT id, event_id, user_id, quantity, status, payment_id, idempotency_key, amount_cents, service_fee_cents, net_earning_cents, created_at, updated_at, cancelled_at FROM bookings WHERE user_id = $1`
+	query := `SELECT id, event_id, user_id, quantity, status, payment_id, idempotency_key, amount_cents, service_fee_cents, net_earning_cents, created_at, updated_at, cancelled_at, notification_sent_whatsapp, notification_sent_email, reminder_notification_sent_email, reminder_notification_sent_at, reminder_notification_sent_whatsapp, reminder_whatsapp_sent_at FROM bookings WHERE user_id = $1`
 	rows, err := r.db.QueryContext(ctx, query, userID)
 	if err != nil {
 		return nil, err
@@ -69,7 +74,7 @@ func (r *postgresBookingRepository) ListByUserID(ctx context.Context, userID uui
 	for rows.Next() {
 		b := &models.Booking{}
 		if err := rows.Scan(
-			&b.ID, &b.EventID, &b.UserID, &b.Quantity, &b.Status, &b.PaymentID, &b.IdempotencyKey, &b.AmountCents, &b.ServiceFeeCents, &b.NetEarningCents, &b.CreatedAt, &b.UpdatedAt, &b.CancelledAt,
+			&b.ID, &b.EventID, &b.UserID, &b.Quantity, &b.Status, &b.PaymentID, &b.IdempotencyKey, &b.AmountCents, &b.ServiceFeeCents, &b.NetEarningCents, &b.CreatedAt, &b.UpdatedAt, &b.CancelledAt, &b.NotificationSentWhatsapp, &b.NotificationSentEmail, &b.ReminderNotificationSentEmail, &b.ReminderNotificationSentAt, &b.ReminderNotificationSentWhatsapp, &b.ReminderWhatsappSentAt,
 		); err != nil {
 			return nil, err
 		}
@@ -79,7 +84,7 @@ func (r *postgresBookingRepository) ListByUserID(ctx context.Context, userID uui
 }
 
 func (r *postgresBookingRepository) ListByEventID(ctx context.Context, eventID uuid.UUID) ([]*models.Booking, error) {
-	query := `SELECT id, event_id, user_id, quantity, status, payment_id, idempotency_key, amount_cents, service_fee_cents, net_earning_cents, created_at, updated_at, cancelled_at
+	query := `SELECT id, event_id, user_id, quantity, status, payment_id, idempotency_key, amount_cents, service_fee_cents, net_earning_cents, created_at, updated_at, cancelled_at, notification_sent_whatsapp, notification_sent_email, reminder_notification_sent_email, reminder_notification_sent_at, reminder_notification_sent_whatsapp, reminder_whatsapp_sent_at
 		FROM bookings WHERE event_id = $1 AND status IN ('pending', 'confirmed') ORDER BY created_at ASC`
 	rows, err := r.db.QueryContext(ctx, query, eventID)
 	if err != nil {
@@ -91,7 +96,7 @@ func (r *postgresBookingRepository) ListByEventID(ctx context.Context, eventID u
 	for rows.Next() {
 		b := &models.Booking{}
 		if err := rows.Scan(
-			&b.ID, &b.EventID, &b.UserID, &b.Quantity, &b.Status, &b.PaymentID, &b.IdempotencyKey, &b.AmountCents, &b.ServiceFeeCents, &b.NetEarningCents, &b.CreatedAt, &b.UpdatedAt, &b.CancelledAt,
+			&b.ID, &b.EventID, &b.UserID, &b.Quantity, &b.Status, &b.PaymentID, &b.IdempotencyKey, &b.AmountCents, &b.ServiceFeeCents, &b.NetEarningCents, &b.CreatedAt, &b.UpdatedAt, &b.CancelledAt, &b.NotificationSentWhatsapp, &b.NotificationSentEmail, &b.ReminderNotificationSentEmail, &b.ReminderNotificationSentAt, &b.ReminderNotificationSentWhatsapp, &b.ReminderWhatsappSentAt,
 		); err != nil {
 			return nil, err
 		}
@@ -120,7 +125,7 @@ func (r *postgresBookingRepository) ListRecentCancelledByEventIDs(ctx context.Co
 	if len(eventIDs) == 0 {
 		return nil, nil
 	}
-	query := `SELECT id, event_id, user_id, quantity, status, payment_id, idempotency_key, amount_cents, service_fee_cents, net_earning_cents, created_at, updated_at, cancelled_at
+	query := `SELECT id, event_id, user_id, quantity, status, payment_id, idempotency_key, amount_cents, service_fee_cents, net_earning_cents, created_at, updated_at, cancelled_at, notification_sent_whatsapp, notification_sent_email, reminder_notification_sent_email, reminder_notification_sent_at, reminder_notification_sent_whatsapp, reminder_whatsapp_sent_at
 		FROM bookings WHERE event_id = ANY($1) AND status = 'cancelled' ORDER BY cancelled_at DESC LIMIT $2`
 	rows, err := r.db.QueryContext(ctx, query, pq.Array(eventIDs), limit)
 	if err != nil {
@@ -132,7 +137,7 @@ func (r *postgresBookingRepository) ListRecentCancelledByEventIDs(ctx context.Co
 	for rows.Next() {
 		b := &models.Booking{}
 		if err := rows.Scan(
-			&b.ID, &b.EventID, &b.UserID, &b.Quantity, &b.Status, &b.PaymentID, &b.IdempotencyKey, &b.AmountCents, &b.ServiceFeeCents, &b.NetEarningCents, &b.CreatedAt, &b.UpdatedAt, &b.CancelledAt,
+			&b.ID, &b.EventID, &b.UserID, &b.Quantity, &b.Status, &b.PaymentID, &b.IdempotencyKey, &b.AmountCents, &b.ServiceFeeCents, &b.NetEarningCents, &b.CreatedAt, &b.UpdatedAt, &b.CancelledAt, &b.NotificationSentWhatsapp, &b.NotificationSentEmail, &b.ReminderNotificationSentEmail, &b.ReminderNotificationSentAt, &b.ReminderNotificationSentWhatsapp, &b.ReminderWhatsappSentAt,
 		); err != nil {
 			return nil, err
 		}
@@ -149,4 +154,52 @@ func (r *postgresBookingRepository) CountConfirmedByEventIDs(ctx context.Context
 	query := `SELECT COUNT(*) FROM bookings WHERE event_id = ANY($1) AND status = 'confirmed'`
 	err := r.db.QueryRowContext(ctx, query, pq.Array(eventIDs)).Scan(&count)
 	return count, err
+}
+
+func (r *postgresBookingRepository) MarkWhatsappNotificationSent(ctx context.Context, id uuid.UUID) error {
+	query := `UPDATE bookings SET notification_sent_whatsapp = true WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, id)
+	return err
+}
+
+func (r *postgresBookingRepository) MarkEmailReminderNotificationSent(ctx context.Context, id uuid.UUID) error {
+	query := `UPDATE bookings SET reminder_notification_sent_email = true, reminder_notification_sent_at = NOW() WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, id)
+	return err
+}
+
+func (r *postgresBookingRepository) ListPendingReminderNotifications(ctx context.Context, limit int) ([]*models.Booking, error) {
+	query := `SELECT id, event_id, user_id, quantity, status, payment_id, idempotency_key, amount_cents, service_fee_cents, net_earning_cents, created_at, updated_at, cancelled_at, notification_sent_whatsapp, notification_sent_email, reminder_notification_sent_email, reminder_notification_sent_at, reminder_notification_sent_whatsapp, reminder_whatsapp_sent_at
+		FROM bookings 
+		WHERE status IN ('pending', 'confirmed') AND reminder_notification_sent_email = false
+		LIMIT $1`
+	rows, err := r.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var bookings []*models.Booking
+	for rows.Next() {
+		b := &models.Booking{}
+		if err := rows.Scan(
+			&b.ID, &b.EventID, &b.UserID, &b.Quantity, &b.Status, &b.PaymentID, &b.IdempotencyKey, &b.AmountCents, &b.ServiceFeeCents, &b.NetEarningCents, &b.CreatedAt, &b.UpdatedAt, &b.CancelledAt, &b.NotificationSentWhatsapp, &b.NotificationSentEmail, &b.ReminderNotificationSentEmail, &b.ReminderNotificationSentAt, &b.ReminderNotificationSentWhatsapp, &b.ReminderWhatsappSentAt,
+		); err != nil {
+			return nil, err
+		}
+		bookings = append(bookings, b)
+	}
+	return bookings, rows.Err()
+}
+
+func (r *postgresBookingRepository) MarkEmailNotificationSent(ctx context.Context, id uuid.UUID) error {
+	query := `UPDATE bookings SET notification_sent_email = true WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, id)
+	return err
+}
+
+func (r *postgresBookingRepository) MarkWhatsappReminderNotificationSent(ctx context.Context, id uuid.UUID) error {
+	query := `UPDATE bookings SET reminder_notification_sent_whatsapp = true, reminder_whatsapp_sent_at = NOW() WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, id)
+	return err
 }

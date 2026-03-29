@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"log"
 	"net/http"
 	"os"
@@ -20,6 +21,7 @@ import (
 	cfgfirebase "myslotmate-backend/internal/firebase"
 	"myslotmate-backend/internal/lib/event"
 	"myslotmate-backend/internal/lib/identity"
+	"myslotmate-backend/internal/lib/notification"
 	"myslotmate-backend/internal/lib/payment"
 	"myslotmate-backend/internal/lib/payout"
 	"myslotmate-backend/internal/lib/realtime"
@@ -166,7 +168,21 @@ func main() {
 	userService := service.NewUserService(userRepo, hostRepo, savedExpRepo, accountRepo, paymentRepo, workerPool, dispatcher, aadharProvider, paymentProvider)
 	hostService := service.NewHostService(hostRepo, userRepo, eventRepo, bookingRepo, reviewRepo, payoutRepo, accountRepo, dispatcher)
 	eventService := service.NewEventService(eventRepo, bookingRepo, accountRepo, ledgerRepo, dispatcher)
-	bookingService := service.NewBookingService(bookingRepo, eventRepo, accountRepo, paymentRepo, payoutRepo, hostRepo, ledgerRepo, dispatcher)
+
+	// Initialize notification service
+	notifService, err := initializeNotificationService(&cfg.Twilio, &cfg.SMTP, dbConn)
+	if err != nil {
+		log.Printf("Warning: failed to initialize notification service: %v", err)
+	}
+
+	// Initialize reminder scheduler
+	var reminderScheduler *notification.ReminderScheduler
+	if notifService != nil {
+		reminderScheduler = initializeReminderScheduler(dbConn, notifService, 5, 90)
+		reminderScheduler.Start(5 * time.Minute)
+	}
+
+	bookingService := service.NewBookingService(bookingRepo, eventRepo, accountRepo, paymentRepo, payoutRepo, hostRepo, userRepo, ledgerRepo, dispatcher, notifService)
 	reviewService := service.NewReviewService(reviewRepo, eventRepo, hostRepo, dispatcher)
 	inboxService := service.NewInboxService(inboxRepo, eventRepo, socketService)
 	supportService := service.NewSupportService(supportRepo)
@@ -226,6 +242,11 @@ func main() {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 	log.Println("shutting down server...")
+
+	// Stop reminder scheduler
+	if reminderScheduler != nil {
+		reminderScheduler.Stop()
+	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer shutdownCancel()
@@ -293,4 +314,58 @@ func ensurePlatformAccount(ctx context.Context, accountRepo repository.AccountRe
 
 	log.Printf("✓ Platform account created: %s", account.ID)
 	return nil
+}
+
+// initializeNotificationService creates and returns a fully configured notification service
+func initializeNotificationService(
+	twilioConfig *config.TwilioConfig,
+	smtpConfig *config.SMTPConfig,
+	db *sql.DB,
+) (notification.NotificationService, error) {
+	if twilioConfig.AccountSID == "" || twilioConfig.AuthToken == "" {
+		log.Println("Warning: Twilio credentials not configured — notifications disabled")
+		return nil, nil
+	}
+
+	// Create repositories
+	bookingRepo := repository.NewBookingRepository(db)
+	eventRepo := repository.NewEventRepository(db)
+	userRepo := repository.NewUserRepository(db)
+
+	// Create and return the Twilio notification service
+	svc := notification.NewTwilioNotificationService(
+		twilioConfig,
+		smtpConfig,
+		bookingRepo,
+		eventRepo,
+		userRepo,
+	)
+
+	log.Println("✓ Notification service initialized (Twilio with Email)")
+	return svc, nil
+}
+
+// initializeReminderScheduler creates and returns a configured reminder scheduler
+func initializeReminderScheduler(
+	db *sql.DB,
+	notifService notification.NotificationService,
+	checkIntervalMins int,
+	reminderMinsBefore int,
+) *notification.ReminderScheduler {
+	// Create repositories
+	bookingRepo := repository.NewBookingRepository(db)
+	eventRepo := repository.NewEventRepository(db)
+	userRepo := repository.NewUserRepository(db)
+
+	// Create scheduler
+	scheduler := notification.NewReminderScheduler(
+		bookingRepo,
+		eventRepo,
+		userRepo,
+		notifService,
+		reminderMinsBefore,
+	)
+
+	log.Printf("✓ Reminder scheduler initialized (check every %d min, remind %d min before)", checkIntervalMins, reminderMinsBefore)
+	return scheduler
 }
