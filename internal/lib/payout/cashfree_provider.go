@@ -4,24 +4,31 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
 
 // CashfreeConfig holds credentials for Cashfree Payouts API.
 type CashfreeConfig struct {
-	BaseURL       string // CASHFREE_BASE_URL (default: https://payout-api.cashfree.com)
-	ClientID      string // CASHFREE_CLIENT_ID
-	ClientSecret  string // CASHFREE_CLIENT_SECRET
-	WebhookSecret string // CASHFREE_WEBHOOK_SECRET
-	APIVersion    string // CASHFREE_API_VERSION
+	BaseURL        string // CASHFREE_BASE_URL (default: https://payout-api.cashfree.com)
+	ClientID       string // CASHFREE_CLIENT_ID
+	ClientSecret   string // CASHFREE_CLIENT_SECRET
+	WebhookSecret  string // CASHFREE_WEBHOOK_SECRET
+	APIVersion     string // CASHFREE_API_VERSION
+	PublicKeyPath  string // Path to RSA public key PEM file for 2FA signatures
+	UseIPWhitelist bool   // Set to true if using IP whitelisting (simpler - no RSA needed)
 }
 
 // CashfreeProvider implements Provider using Cashfree Payouts API.
@@ -37,7 +44,7 @@ func NewCashfreeProvider(cfg CashfreeConfig) Provider {
 		cfg.BaseURL = defaultCashfreeBaseURL
 	}
 	if cfg.APIVersion == "" {
-		cfg.APIVersion = "2024-01-01"
+		cfg.APIVersion = "2026-01-01"
 	}
 
 	return &CashfreeProvider{
@@ -223,32 +230,76 @@ func (p *CashfreeProvider) setHeaders(req *http.Request, body []byte, method str
 	req.Header.Set("x-client-secret", p.cfg.ClientSecret)
 	req.Header.Set("x-api-version", p.cfg.APIVersion)
 
-	// Cashfree requires HMAC-SHA256 signature for request authentication
-	// Signature is calculated on: method + path + request_body
-	if body != nil && len(body) > 0 {
-		sig := p.generateSignature(body, method, path)
-		fmt.Printf("[CASHFREE] Generated signature (hex): %s\n", sig)
-		// x-signature header for Cashfree API
-		req.Header.Set("x-signature", sig)
-		fmt.Printf("[CASHFREE] Headers set with x-signature header\n")
+	// Cashfree Payouts API requires 2FA signature in X-Cf-Signature header.
+	// Two options:
+	// 1. IP Whitelisting (simpler): No signature needed if server IP is whitelisted
+	// 2. RSA Signatures (default): Sign with RSA public key from Cashfree dashboard
+
+	if !p.cfg.UseIPWhitelist {
+		// Mode: RSA signature required
+		if len(body) > 0 {
+			sig, err := p.generateRSASignature()
+			if err != nil {
+				fmt.Printf("[CASHFREE] RSA signature generation failed: %v (falling back to plain request)\n", err)
+			} else if sig != "" {
+				fmt.Printf("[CASHFREE] Generated RSA signature\n")
+				// IMPORTANT: Header name is X-Cf-Signature (not x-signature)
+				req.Header.Set("X-Cf-Signature", sig)
+				fmt.Printf("[CASHFREE] Headers set with X-Cf-Signature header\n")
+			}
+		}
 	} else {
-		fmt.Printf("[CASHFREE] No body provided, skipping signature\n")
+		// Mode: IP Whitelisting
+		fmt.Printf("[CASHFREE] Using IP whitelisting mode - no signature required\n")
 	}
 }
 
-// generateSignature creates HMAC-SHA256 signature including method, path, and body
-func (p *CashfreeProvider) generateSignature(body []byte, method string, path string) string {
-	// Cashfree uses: HMAC-SHA256(method+path+body, client_secret) -> hex encoded
-	// Example: POST/payout/transfers{...json...}
-	message := method + path
-	message = message + string(body)
+// generateRSASignature creates RSA-2048 signature for Cashfree 2FA.
+// As per Cashfree docs: RSA encrypt "{clientID}.{timestamp}" with public key from dashboard,
+// then Base64 encode the ciphertext.
+func (p *CashfreeProvider) generateRSASignature() (string, error) {
+	// If no public key configured, return empty (will use IP whitelist mode)
+	if p.cfg.PublicKeyPath == "" {
+		return "", fmt.Errorf("CASHFREE_PUBLIC_KEY_PATH not configured")
+	}
 
-	mac := hmac.New(sha256.New, []byte(p.cfg.ClientSecret))
-	mac.Write([]byte(message))
-	// Return hex encoded signature
-	sig := hex.EncodeToString(mac.Sum(nil))
-	fmt.Printf("[CASHFREE] Signature calc: method=%s, path=%s, bodyLen=%d, signature(hex)=%s\n", method, path, len(body), sig)
-	return sig
+	// Read PEM-encoded public key from file
+	keyData, err := os.ReadFile(p.cfg.PublicKeyPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read RSA public key: %w", err)
+	}
+
+	// Parse PEM block
+	block, _ := pem.Decode(keyData)
+	if block == nil {
+		return "", fmt.Errorf("failed to parse PEM block")
+	}
+
+	// Parse RSA public key
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse RSA public key: %w", err)
+	}
+
+	publicKey, ok := pub.(*rsa.PublicKey)
+	if !ok {
+		return "", fmt.Errorf("key is not RSA public key")
+	}
+
+	// Create signature string: clientID.timestamp
+	timestamp := time.Now().Unix()
+	message := fmt.Sprintf("%s.%d", p.cfg.ClientID, timestamp)
+
+	// RSA encrypt with OAEPwith SHA-256
+	ciphertext, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, publicKey, []byte(message), nil)
+	if err != nil {
+		return "", fmt.Errorf("RSA encryption failed: %w", err)
+	}
+
+	// Base64 encode the ciphertext
+	signature := base64.StdEncoding.EncodeToString(ciphertext)
+	fmt.Printf("[CASHFREE] Signature calc: clientID=%s, timestamp=%d, signature_b64_len=%d\n", p.cfg.ClientID, timestamp, len(signature))
+	return signature, nil
 }
 
 func buildCashfreeTransferRequest(req TransferRequest) (*cashfreeTransferReq, error) {

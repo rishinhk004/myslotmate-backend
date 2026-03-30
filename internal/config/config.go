@@ -57,21 +57,15 @@ type AadharConfig struct {
 	MockName string
 }
 
-// RazorpayConfig holds Razorpay Standard payment collection credentials.
-type RazorpayConfig struct {
-	KeyID                string
-	KeySecret            string
-	WebhookSecret        string // legacy/shared webhook secret fallback
-	PaymentWebhookSecret string // payment collection webhook secret
-}
-
-// CashfreeConfig holds Cashfree payout credentials.
+// CashfreeConfig holds Cashfree payment and payout credentials.
 type CashfreeConfig struct {
-	BaseURL       string
-	ClientID      string
-	ClientSecret  string
-	WebhookSecret string
-	APIVersion    string
+	BaseURL        string
+	ClientID       string
+	ClientSecret   string
+	WebhookSecret  string
+	APIVersion     string
+	PublicKeyPath  string // Path to RSA public key PEM file for 2FA signatures
+	UseIPWhitelist bool   // Set to true if using IP whitelisting (simpler - no RSA needed)
 }
 
 type Config struct {
@@ -82,7 +76,6 @@ type Config struct {
 	Database          DatabaseConfig
 	Aadhar            AadharConfig
 	Setu              SetuConfig
-	Razorpay          RazorpayConfig
 	Cashfree          CashfreeConfig
 	S3                S3Config
 	Twilio            TwilioConfig
@@ -122,18 +115,14 @@ func Load() (*Config, error) {
 			ClientSecret:      getEnv("SETU_CLIENT_SECRET", ""),
 			ProductInstanceID: getEnv("SETU_PRODUCT_INSTANCE_ID", ""),
 		},
-		Razorpay: RazorpayConfig{
-			KeyID:                getEnv("RAZORPAY_KEY_ID", ""),
-			KeySecret:            getEnv("RAZORPAY_KEY_SECRET", ""),
-			WebhookSecret:        getEnv("RAZORPAY_WEBHOOK_SECRET", ""),
-			PaymentWebhookSecret: getEnv("RAZORPAY_PAYMENT_WEBHOOK_SECRET", ""),
-		},
 		Cashfree: CashfreeConfig{
-			BaseURL:       getEnv("CASHFREE_BASE_URL", "https://payout-api.cashfree.com"),
-			ClientID:      getEnv("CASHFREE_CLIENT_ID", ""),
-			ClientSecret:  getEnv("CASHFREE_CLIENT_SECRET", ""),
-			WebhookSecret: getEnv("CASHFREE_WEBHOOK_SECRET", ""),
-			APIVersion:    getEnv("CASHFREE_API_VERSION", "2024-01-01"),
+			BaseURL:        getEnv("CASHFREE_BASE_URL", "https://api.cashfree.com"),
+			ClientID:       getEnv("CASHFREE_CLIENT_ID", ""),
+			ClientSecret:   getEnv("CASHFREE_CLIENT_SECRET", ""),
+			WebhookSecret:  getEnv("CASHFREE_WEBHOOK_SECRET", ""),
+			APIVersion:     getEnv("CASHFREE_API_VERSION", "2026-01-01"),
+			PublicKeyPath:  getEnv("CASHFREE_PUBLIC_KEY_PATH", ""),
+			UseIPWhitelist: getEnv("CASHFREE_USE_IP_WHITELIST", "false") == "true",
 		},
 		Twilio: TwilioConfig{
 			AccountSID:       getEnv("TWILIO_ACCOUNT_SID", ""),

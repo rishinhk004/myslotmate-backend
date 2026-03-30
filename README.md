@@ -2,7 +2,7 @@
 
 **A production-grade event booking platform backend built with Go, following Clean Architecture and enterprise design patterns.**
 
-MySlotMate allows users to discover and book event slots, and enables hosts to apply, get admin-approved, and then create and manage events, track earnings, and communicate with attendees — with optional Aadhar-based identity verification, real-time WebSocket updates, and a wallet-based payment/payout system powered by Razorpay (collections) and Cashfree (payouts).
+MySlotMate allows users to discover and book event slots, and enables hosts to apply, get admin-approved, and then create and manage events, track earnings, and communicate with attendees — with optional Aadhar-based identity verification, real-time WebSocket updates, and a wallet-based payment system powered by Cashfree (collections and payouts).
 
 ---
 
@@ -183,7 +183,7 @@ myslotmate-backend/
 │   │   ├── support_controller.go   # Support tickets with evidence upload
 │   │   ├── upload_controller.go    # Generic file upload endpoint (AWS S3)
 │   │   ├── user_controller.go      # Signup, Aadhar, profile, saved experiences
-│   │   └── webhook_controller.go   # Cashfree payout webhooks + Razorpay payment webhooks
+│   │   └── webhook_controller.go   # Cashfree payout and payment webhooks
 │   ├── db/
 │   │   └── db.go                   # PostgreSQL connection (pgx)
 │   ├── firebase/
@@ -618,7 +618,7 @@ failed/reversed        failed / reversed
 
 | Type | Direction | Description |
 |------|-----------|-------------|
-| `topup` | External → User wallet | User adds money to wallet (via Razorpay) |
+| `topup` | External → User wallet | User adds money to wallet (via Cashfree) |
 | `booking` | User wallet → Host wallet | Booking payment (now uses ledger entries) |
 | `refund` | Reverse booking | Cancelled booking refund |
 | `payout` | Host wallet → Bank/UPI | Host withdrawal via Cashfree |
@@ -738,7 +738,7 @@ CREATE TABLE transaction_ledger (
   idempotency_key VARCHAR UNIQUE,           -- group related entries
   description TEXT,
   balance_after_cents BIGINT,               -- calculated at insert time
-  external_reference_id VARCHAR,            -- Cashfree/Razorpay ID
+  external_reference_id VARCHAR,            -- Cashfree ID
   reversal_of_ledger_id UUID,              -- links reversal to original
   status VARCHAR,                           -- pending, completed, failed, reversed
   metadata JSONB,
@@ -752,8 +752,8 @@ CREATE TABLE transaction_ledger (
 ```sql
 CREATE TABLE webhook_executions (
   id UUID PRIMARY KEY,
-  event_type VARCHAR NOT NULL,              -- "cashfree_payout", "razorpay_payment"
-  provider_id VARCHAR NOT NULL,             -- "cashfree", "razorpay"
+  event_type VARCHAR NOT NULL,              -- "cashfree_payout", "cashfree_payment"
+  provider_id VARCHAR NOT NULL,             -- "cashfree"
   external_event_id VARCHAR NOT NULL,       -- provider's unique event ID
   idempotency_key VARCHAR NOT NULL UNIQUE,  -- Ensures at-most-once processing
   ledger_id UUID,                           -- linked ledger entry created
@@ -1235,7 +1235,7 @@ All responses follow a standardized JSON envelope:
 | `GET` | `/payouts/methods/{hostID}` | List payout methods for a host |
 | `PUT` | `/payouts/methods/{methodID}/primary` | Set a payout method as primary |
 | `DELETE` | `/payouts/methods/{methodID}` | Remove a payout method |
-| `POST` | `/payouts/withdraw` | Request a withdrawal (via Razorpay) |
+| `POST` | `/payouts/withdraw` | Request a withdrawal (via Cashfree) |
 | `GET` | `/payouts/earnings/{hostID}` | Get earnings summary (balance, total, pending) |
 | `GET` | `/payouts/history/{hostID}` | Get payout transaction history |
 
@@ -1307,7 +1307,7 @@ Returns `[{ "file_name": "...", "url": "https://...", "size": 12345 }]`
 - **PostgreSQL 15+**
 - **Firebase project** with service account credentials
 - **AWS account** with an S3 bucket and IAM credentials
-- **Razorpay account** (for wallet top-up collections)
+- **Cashfree account** (for wallet top-up collections and payouts)
 - **Cashfree account** with payouts enabled
 - **Setu account** for Aadhar OKYC
 
@@ -1320,7 +1320,7 @@ cd myslotmate-backend
 
 # 2. Configure environment
 cp .env.example .env
-# Edit .env with your database URL, Firebase config, Razorpay keys, Cashfree keys, Setu keys
+# Edit .env with your database URL, Firebase config, Cashfree keys, Setu keys
 
 # 3. Run migrations
 go run cmd/migrate/run.go
@@ -1359,15 +1359,16 @@ Configuration is loaded from environment variables (with `.env` support via godo
 | `SETU_CLIENT_ID` | — | Setu client ID |
 | `SETU_CLIENT_SECRET` | — | Setu client secret |
 | `SETU_PRODUCT_INSTANCE_ID` | — | Setu product instance ID |
-| `RAZORPAY_KEY_ID` | — | Razorpay API key ID (required) |
-| `RAZORPAY_KEY_SECRET` | — | Razorpay API key secret (required) |
-| `RAZORPAY_PAYMENT_WEBHOOK_SECRET` | — | Razorpay payment webhook secret |
-| `RAZORPAY_WEBHOOK_SECRET` | — | Legacy/shared Razorpay webhook secret fallback |
-| `CASHFREE_BASE_URL` | `https://payout-api.cashfree.com` | Cashfree payout API base URL |
+| `CASHFREE_BASE_URL` | `https://payout-api.cashfree.com` | Cashfree API base URL |
+| `CASHFREE_CLIENT_ID` | — | Cashfree API client ID (required) |
+| `CASHFREE_CLIENT_SECRET` | — | Cashfree API client secret (required) |
+| `CASHFREE_WEBHOOK_SECRET` | — | Cashfree webhook secret for signature verification |
+| `CASHFREE_API_VERSION` | `2026-01-01` | Cashfree API version |
+| `CASHFREE_BASE_URL` | `https://api.cashfree.com` | Cashfree API base URL |
 | `CASHFREE_CLIENT_ID` | — | Cashfree client ID for payouts |
 | `CASHFREE_CLIENT_SECRET` | — | Cashfree client secret for payouts |
 | `CASHFREE_WEBHOOK_SECRET` | — | Cashfree payout webhook secret |
-| `CASHFREE_API_VERSION` | `2024-01-01` | Cashfree API version header |
+| `CASHFREE_API_VERSION` | `2026-01-01` | Cashfree API version header |
 
 ---
 

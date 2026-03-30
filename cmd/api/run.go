@@ -146,24 +146,15 @@ func main() {
 	})
 	log.Println("Using Cashfree Payout Provider")
 
-	// Strategy Pattern: Payment Collection Provider (Razorpay Standard)
-	rzpKeyID := cfg.Razorpay.KeyID
-	rzpKeySecret := cfg.Razorpay.KeySecret
-	if rzpKeyID == "" || rzpKeySecret == "" {
-		log.Println("Warning: Razorpay credentials not configured — payment collection disabled (using dummy keys)")
-		rzpKeyID = "rzp_test_dummy"
-		rzpKeySecret = "dummy_secret"
-	}
-	paymentWebhookSecret := cfg.Razorpay.PaymentWebhookSecret
-	if paymentWebhookSecret == "" {
-		paymentWebhookSecret = cfg.Razorpay.WebhookSecret // fallback to shared secret
-	}
-	paymentProvider := payment.NewRazorpayProvider(payment.RazorpayConfig{
-		KeyID:         rzpKeyID,
-		KeySecret:     rzpKeySecret,
-		WebhookSecret: paymentWebhookSecret,
+	// Strategy Pattern: Payment Collection Provider (Cashfree Payment Links)
+	paymentProvider := payment.NewCashfreePaymentProvider(payment.CashfreePaymentConfig{
+		BaseURL:       cfg.Cashfree.BaseURL,
+		ClientID:      cfg.Cashfree.ClientID,
+		ClientSecret:  cfg.Cashfree.ClientSecret,
+		WebhookSecret: cfg.Cashfree.WebhookSecret,
+		APIVersion:    cfg.Cashfree.APIVersion,
 	})
-	log.Println("Using Razorpay Payment Collection Provider")
+	log.Println("Using Cashfree Payment Links Provider")
 
 	userService := service.NewUserService(userRepo, hostRepo, savedExpRepo, accountRepo, paymentRepo, workerPool, dispatcher, aadharProvider, paymentProvider)
 	hostService := service.NewHostService(hostRepo, userRepo, eventRepo, bookingRepo, reviewRepo, payoutRepo, accountRepo, dispatcher)

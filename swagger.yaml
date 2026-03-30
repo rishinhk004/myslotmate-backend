@@ -72,7 +72,7 @@ tags:
   - name: Upload
     description: Generic file upload (AWS S3)
   - name: Webhooks
-    description: Cashfree payout + Razorpay payment webhook receivers
+    description: Cashfree payout and payment webhook receivers
   - name: Admin
     description: Admin-only host application management (requires ADMIN_EMAIL)
 
@@ -254,12 +254,12 @@ paths:
   /users/wallet/topup:
     post:
       tags: [Users]
-      summary: Initiate wallet top-up (creates Razorpay order)
+      summary: Initiate wallet top-up (creates Cashfree payment link)
       operationId: initiateTopUp
       description: |
-        Creates a Razorpay order for the given amount. Returns `order_id` and `key_id`
-        that the client uses to launch the Razorpay Checkout SDK. After the user
-        completes payment, call `/users/wallet/topup/verify` with the Razorpay callback data.
+        Creates a Cashfree payment link for the given amount. Returns `order_id` and `key_id`
+        that the client uses to complete payment. After the user
+        completes payment, call `/users/wallet/topup/verify` with the Cashfree callback data.
       requestBody:
         required: true
         content:
@@ -268,7 +268,7 @@ paths:
               $ref: "#/components/schemas/TopUpRequest"
       responses:
         "201":
-          description: Razorpay order created — use these fields to launch checkout
+          description: Cashfree payment link created — use these fields to complete payment
           content:
             application/json:
               schema:
@@ -286,8 +286,8 @@ paths:
       summary: Verify top-up payment and credit wallet
       operationId: verifyTopUp
       description: |
-        Called by the client after Razorpay Checkout completes successfully.
-        Verifies the Razorpay signature, credits the wallet, and returns the updated balance.
+        Called by the client after Cashfree payment completes successfully.
+        Verifies the Cashfree signature, credits the wallet, and returns the updated balance.
       requestBody:
         required: true
         content:
@@ -304,7 +304,7 @@ paths:
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
-          description: Invalid Razorpay signature
+          description: Invalid Cashfree signature
           content:
             application/json:
               schema:
@@ -2098,14 +2098,14 @@ paths:
   /webhooks/payment:
     post:
       tags: [Webhooks]
-      summary: Razorpay payment webhook receiver
-      operationId: razorpayPaymentWebhook
+      summary: Cashfree payment webhook receiver
+      operationId: cashfreePaymentWebhook
       description: |
-        Called by Razorpay when a payment is captured or fails.
+        Called by Cashfree when a payment is captured or fails.
         Acts as a server-side fallback to credit the wallet even if the
         client-side verify call was missed. Signature is verified via HMAC-SHA256.
       parameters:
-        - name: X-Razorpay-Signature
+        - name: X-Cashfree-Signature
           in: header
           required: true
           schema:
@@ -2115,7 +2115,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/RazorpayPaymentWebhookEvent"
+              $ref: "#/components/schemas/CashfreePaymentWebhookEvent"
       responses:
         "200":
           description: Webhook processed
@@ -2389,12 +2389,12 @@ components:
 
     TopUpOrderResponse:
       type: object
-      description: Returned after creating a Razorpay order. Use these fields to launch checkout.
+      description: Returned after creating a Cashfree payment link. Use these fields to complete payment.
       properties:
         order_id:
           type: string
-          description: Razorpay order ID (order_xxxxx)
-          example: order_EKm05ESALkpH5f
+          description: Cashfree payment link ID
+          example: link_EKm05ESALkpH5f
         amount_cents:
           type: integer
           format: int64
@@ -2405,8 +2405,8 @@ components:
           example: INR
         key_id:
           type: string
-          description: Razorpay public key for client-side checkout SDK
-          example: rzp_live_xxxxxxx
+          description: Cashfree Client ID for payment processing
+          example: TEST123456789
         payment_id:
           type: string
           format: uuid
@@ -2421,19 +2421,19 @@ components:
           format: uuid
         razorpay_order_id:
           type: string
-          description: From Razorpay checkout callback
-          example: order_EKm05ESALkpH5f
+          description: From Cashfree payment callback
+          example: link_EKm05ESALkpH5f
         razorpay_payment_id:
           type: string
-          description: From Razorpay checkout callback
+          description: From Cashfree payment callback
           example: pay_EKm05ESALkpH5f
         razorpay_signature:
           type: string
-          description: HMAC-SHA256 signature from Razorpay checkout callback
+          description: HMAC-SHA256 signature from Cashfree payment callback
 
-    RazorpayPaymentWebhookEvent:
+    CashfreePaymentWebhookEvent:
       type: object
-      description: Razorpay payment webhook payload (payment.captured / payment.failed)
+      description: Cashfree payment webhook payload (payment webhook event)
       properties:
         entity:
           type: string
