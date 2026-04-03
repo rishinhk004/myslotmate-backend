@@ -141,9 +141,15 @@ func main() {
 		BaseURL:       cfg.Cashfree.BaseURL,
 		ClientID:      cfClientID,
 		ClientSecret:  cfClientSecret,
+		PublicKey:     cfg.Cashfree.PublicKey,
 		WebhookSecret: cfg.Cashfree.WebhookSecret,
 		APIVersion:    cfg.Cashfree.APIVersion,
 	})
+	if cfg.Cashfree.PublicKey == "" {
+		log.Println("Warning: Cashfree public key is empty!")
+	} else {
+		log.Printf("[API] Cashfree provider initialized with public key (length=%d)\n", len(cfg.Cashfree.PublicKey))
+	}
 	log.Println("Using Cashfree Payout Provider")
 
 	// Strategy Pattern: Payment Collection Provider (Razorpay Standard)

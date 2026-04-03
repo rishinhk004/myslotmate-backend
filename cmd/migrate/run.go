@@ -20,7 +20,11 @@ import (
 )
 
 func main() {
-	_ = godotenv.Load()
+	// Load .env from current working directory
+	envPath := ".env"
+	if err := godotenv.Load(envPath); err != nil {
+		log.Printf("warning: could not load %s: %v", envPath, err)
+	}
 
 	cfg, err := config.Load()
 	if err != nil {

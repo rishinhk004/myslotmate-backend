@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -70,6 +72,7 @@ type CashfreeConfig struct {
 	BaseURL       string
 	ClientID      string
 	ClientSecret  string
+	PublicKey     string // PEM-encoded RSA public key for signature generation
 	WebhookSecret string
 	APIVersion    string
 }
@@ -134,6 +137,7 @@ func Load() (*Config, error) {
 			ClientSecret:  getEnv("CASHFREE_CLIENT_SECRET", ""),
 			WebhookSecret: getEnv("CASHFREE_WEBHOOK_SECRET", ""),
 			APIVersion:    getEnv("CASHFREE_API_VERSION", "2024-01-01"),
+			PublicKey:     loadPublicKey(getEnv("CASHFREE_PUBLIC_KEY_FILE", "config/cashfree-public-key.pem")),
 		},
 		Twilio: TwilioConfig{
 			AccountSID:       getEnv("TWILIO_ACCOUNT_SID", ""),
@@ -149,6 +153,13 @@ func Load() (*Config, error) {
 			Password: getEnv("SMTP_PASSWORD", ""),
 			FromName: getEnv("SMTP_FROM_NAME", "MySlotMate"),
 		},
+	}
+
+	// Log Cashfree public key status
+	if cfg.Cashfree.PublicKey == "" {
+		fmt.Printf("[CONFIG] ERROR: Cashfree public key is EMPTY!\n")
+	} else {
+		fmt.Printf("[CONFIG] Cashfree public key loaded successfully (length=%d)\n", len(cfg.Cashfree.PublicKey))
 	}
 
 	return cfg, nil
@@ -171,4 +182,47 @@ func parseEnvInt(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+// loadPublicKey loads the Cashfree public key from an environment variable or PEM file.
+// If the file doesn't exist or can't be read, returns an empty string.
+func loadPublicKey(filePath string) string {
+	// First, try to load from environment variable directly (for production/containerized deployments)
+	if pubKey := os.Getenv("CASHFREE_PUBLIC_KEY"); pubKey != "" {
+		fmt.Printf("[CONFIG] Loaded Cashfree public key from CASHFREE_PUBLIC_KEY environment variable (length=%d)\n", len(pubKey))
+		// Handle escaped newlines from dotenv
+		pubKey = strings.ReplaceAll(pubKey, "\\n", "\n")
+		fmt.Printf("[CONFIG] After newline processing: length=%d\n", len(pubKey))
+		return pubKey
+	}
+
+	// Try to read from the specified file path
+	data, err := os.ReadFile(filePath)
+	if err == nil {
+		fmt.Printf("[CONFIG] Loaded Cashfree public key from file: %s\n", filePath)
+		return string(data)
+	}
+
+	// Try alternative paths in case working directory is different
+	alternativePaths := []string{
+		filePath,
+		"./config/cashfree-public-key.pem",
+		"../config/cashfree-public-key.pem",
+		"../../config/cashfree-public-key.pem",
+		"/app/config/cashfree-public-key.pem",
+	}
+
+	for _, path := range alternativePaths {
+		if path == filePath {
+			continue // Skip the one we already tried
+		}
+		data, err := os.ReadFile(path)
+		if err == nil {
+			fmt.Printf("[CONFIG] Loaded Cashfree public key from alternative path: %s\n", path)
+			return string(data)
+		}
+	}
+
+	fmt.Printf("[CONFIG] Warning: could not load Cashfree public key from %s or alternative paths\n", filePath)
+	return ""
 }
