@@ -28,6 +28,7 @@ type CashfreeConfig struct {
 	PublicKey     string // CASHFREE_PUBLIC_KEY (PEM-encoded RSA public key for signature generation)
 	WebhookSecret string // CASHFREE_WEBHOOK_SECRET
 	APIVersion    string // CASHFREE_API_VERSION
+	BearerToken   string // CASHFREE_BEARER_TOKEN (optional)
 }
 
 // CashfreeProvider implements Provider using Cashfree Payouts API.
@@ -89,10 +90,11 @@ func (p *CashfreeProvider) InitiateTransfer(ctx context.Context, req TransferReq
 		return nil, fmt.Errorf("failed to marshal cashfree payout request: %w", err)
 	}
 
+	// Use the Direct Transfer v1.2 endpoint for payout requests
 	fmt.Printf("[CASHFREE] InitiateTransfer request: paymentID=%s, amount=%d, method=%s, url=%s\n",
-		req.PaymentID, req.AmountCents, req.MethodType, strings.TrimRight(p.cfg.BaseURL, "/")+"/payout/transfers")
+		req.PaymentID, req.AmountCents, req.MethodType, strings.TrimRight(p.cfg.BaseURL, "/")+"/payout/v1.2/directTransfer")
 
-	url := strings.TrimRight(p.cfg.BaseURL, "/") + "/payout/transfers"
+	url := strings.TrimRight(p.cfg.BaseURL, "/") + "/payout/v1.2/directTransfer"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		fmt.Printf("[CASHFREE] HTTP request creation error: %v\n", err)
