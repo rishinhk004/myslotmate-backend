@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -101,7 +102,6 @@ func (p *CashfreeProvider) InitiateTransfer(ctx context.Context, req TransferReq
 		fmt.Printf("[CASHFREE] Header setup error: %v\n", err)
 		return nil, fmt.Errorf("failed to set headers: %w", err)
 	}
-
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
@@ -225,25 +225,27 @@ func (p *CashfreeProvider) setHeaders(req *http.Request) error {
 	req.Header.Set("x-api-version", p.cfg.APIVersion)
 
 	// Generate RSA signature: ClientId.timestamp encrypted with public key
-	sig, err := p.generateRSASignature()
+	sig, timestamp, err := p.generateRSASignature()
 	if err != nil {
 		fmt.Printf("[CASHFREE] RSA signature generation error: %v\n", err)
 		return err
 	}
 
 	req.Header.Set("x-cf-signature", sig)
+	// Include timestamp header used to create the signature
+	req.Header.Set("x-cf-timestamp", strconv.FormatInt(timestamp, 10))
 	fmt.Printf("[CASHFREE] Headers set with x-cf-signature header\n")
 	return nil
 }
 
 // generateRSASignature creates RSA signature for Cashfree Payouts API 2FA
 // Format: ClientId.timestamp encrypted with RSA public key, then base64 encoded
-func (p *CashfreeProvider) generateRSASignature() (string, error) {
+func (p *CashfreeProvider) generateRSASignature() (string, int64, error) {
 	fmt.Printf("[CASHFREE_PROVIDER] generateRSASignature called, public key length: %d\n", len(p.cfg.PublicKey))
 
 	if p.cfg.PublicKey == "" {
 		fmt.Printf("[CASHFREE_PROVIDER] ERROR: Public key is empty!\n")
-		return "", fmt.Errorf("public key is not configured")
+		return "", 0, fmt.Errorf("public key is not configured")
 	}
 
 	// Create message: clientId.timestamp (must be exact format)
@@ -257,7 +259,7 @@ func (p *CashfreeProvider) generateRSASignature() (string, error) {
 	pubKeyBlock, restPEM := pem.Decode([]byte(p.cfg.PublicKey))
 	if pubKeyBlock == nil {
 		fmt.Printf("[CASHFREE_PROVIDER] ERROR: Failed to decode PEM block from key\n")
-		return "", fmt.Errorf("failed to decode public key PEM block")
+		return "", 0, fmt.Errorf("failed to decode public key PEM block")
 	}
 
 	fmt.Printf("[CASHFREE_PROVIDER] PEM block decoded successfully (type=%s, remaining=%d bytes)\n", pubKeyBlock.Type, len(restPEM))
@@ -266,13 +268,13 @@ func (p *CashfreeProvider) generateRSASignature() (string, error) {
 	pubKey, err := x509.ParsePKIXPublicKey(pubKeyBlock.Bytes)
 	if err != nil {
 		fmt.Printf("[CASHFREE_PROVIDER] ERROR: Failed to parse PKIX public key: %v\n", err)
-		return "", fmt.Errorf("failed to parse public key: %w", err)
+		return "", 0, fmt.Errorf("failed to parse public key: %w", err)
 	}
 
 	rsaPubKey, ok := pubKey.(*rsa.PublicKey)
 	if !ok {
 		fmt.Printf("[CASHFREE_PROVIDER] ERROR: Public key is not RSA type\n")
-		return "", fmt.Errorf("public key is not RSA")
+		return "", 0, fmt.Errorf("public key is not RSA")
 	}
 
 	fmt.Printf("[CASHFREE_PROVIDER] RSA public key parsed successfully (keySize=%d bits)\n", rsaPubKey.N.BitLen())
@@ -281,7 +283,7 @@ func (p *CashfreeProvider) generateRSASignature() (string, error) {
 	ciphertext, err := rsa.EncryptPKCS1v15(rand.Reader, rsaPubKey, messageBytes)
 	if err != nil {
 		fmt.Printf("[CASHFREE_PROVIDER] ERROR: RSA PKCS#1 v1.5 encryption failed: %v\n", err)
-		return "", fmt.Errorf("failed to encrypt with RSA: %w", err)
+		return "", 0, fmt.Errorf("failed to encrypt with RSA: %w", err)
 	}
 
 	fmt.Printf("[CASHFREE_PROVIDER] RSA encryption successful (ciphertext length=%d bytes)\n", len(ciphertext))
@@ -291,7 +293,7 @@ func (p *CashfreeProvider) generateRSASignature() (string, error) {
 	fmt.Printf("[CASHFREE_PROVIDER] Base64 signature length: %d chars\n", len(signature))
 	fmt.Printf("[CASHFREE_PROVIDER] X-Cf-Signature header value (first 100 chars): %s...\n", signature[:minInt(100, len(signature))])
 	fmt.Printf("[CASHFREE_PROVIDER] RSA signature generated successfully (PKCS#1 v1.5): clientID=%s, timestamp=%d\n", p.cfg.ClientID, timestamp)
-	return signature, nil
+	return signature, timestamp, nil
 }
 
 func minInt(a, b int) int {
