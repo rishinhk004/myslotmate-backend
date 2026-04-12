@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -90,11 +91,20 @@ func (p *CashfreeProvider) InitiateTransfer(ctx context.Context, req TransferReq
 		return nil, fmt.Errorf("failed to marshal cashfree payout request: %w", err)
 	}
 
+	// Ensure we have a fresh payout token — tokens expire quickly
+	token, err := p.authorize(ctx)
+	if err != nil {
+		fmt.Printf("[CASHFREE] Authorize error: %v\n", err)
+		return nil, fmt.Errorf("failed to authorize cashfree payout: %w", err)
+	}
+	// cache token for this provider instance so setHeaders can add Authorization
+	p.cfg.BearerToken = token
+
 	// Use the Direct Transfer v1.2 endpoint for payout requests
 	fmt.Printf("[CASHFREE] InitiateTransfer request: paymentID=%s, amount=%d, method=%s, url=%s\n",
-		req.PaymentID, req.AmountCents, req.MethodType, strings.TrimRight(p.cfg.BaseURL, "/")+"/payout/v1.2/directTransfer")
+		req.PaymentID, req.AmountCents, req.MethodType, strings.TrimRight(p.cfg.BaseURL, "/")+"/payout/transfers")
 
-	url := strings.TrimRight(p.cfg.BaseURL, "/") + "/payout/v1.2/directTransfer"
+	url := strings.TrimRight(p.cfg.BaseURL, "/") + "/payout/transfers"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		fmt.Printf("[CASHFREE] HTTP request creation error: %v\n", err)
@@ -236,7 +246,12 @@ func (p *CashfreeProvider) setHeaders(req *http.Request) error {
 	req.Header.Set("x-cf-signature", sig)
 	// Include timestamp header used to create the signature
 	req.Header.Set("x-cf-timestamp", strconv.FormatInt(timestamp, 10))
-	fmt.Printf("[CASHFREE] Headers set with x-cf-signature header\n")
+	// Add Authorization header if we have a bearer token
+	if strings.TrimSpace(p.cfg.BearerToken) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(p.cfg.BearerToken))
+	}
+
+	fmt.Printf("[CASHFREE] Headers set with x-cf-signature header %s\n", sig)
 	return nil
 }
 
@@ -282,7 +297,7 @@ func (p *CashfreeProvider) generateRSASignature() (string, int64, error) {
 	fmt.Printf("[CASHFREE_PROVIDER] RSA public key parsed successfully (keySize=%d bits)\n", rsaPubKey.N.BitLen())
 
 	// Encrypt using RSA PKCS#1 v1.5 (Cashfree requirement for 2FA)
-	ciphertext, err := rsa.EncryptPKCS1v15(rand.Reader, rsaPubKey, messageBytes)
+	ciphertext, err := rsa.EncryptOAEP(sha1.New(), rand.Reader, rsaPubKey, messageBytes, nil)
 	if err != nil {
 		fmt.Printf("[CASHFREE_PROVIDER] ERROR: RSA PKCS#1 v1.5 encryption failed: %v\n", err)
 		return "", 0, fmt.Errorf("failed to encrypt with RSA: %w", err)
@@ -296,6 +311,65 @@ func (p *CashfreeProvider) generateRSASignature() (string, int64, error) {
 	fmt.Printf("[CASHFREE_PROVIDER] X-Cf-Signature header value (first 100 chars): %s...\n", signature[:minInt(100, len(signature))])
 	fmt.Printf("[CASHFREE_PROVIDER] RSA signature generated successfully (PKCS#1 v1.5): clientID=%s, timestamp=%d\n", p.cfg.ClientID, timestamp)
 	return signature, timestamp, nil
+}
+
+// authorize calls Cashfree /payout/v1/authorize to obtain a short-lived payout token.
+func (p *CashfreeProvider) authorize(ctx context.Context) (string, error) {
+	// Generate RSA signature for the authorize call
+	sig, timestamp, err := p.generateRSASignature()
+	if err != nil {
+		return "", err
+	}
+
+	url := strings.TrimRight(p.cfg.BaseURL, "/") + "/payout/v1/authorize"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create authorize request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("X-Client-Id", p.cfg.ClientID)
+	httpReq.Header.Set("X-Client-Secret", p.cfg.ClientSecret)
+	httpReq.Header.Set("X-Cf-Signature", sig)
+	httpReq.Header.Set("X-Cf-Timestamp", strconv.FormatInt(timestamp, 10))
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("authorize API call failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read authorize response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("authorize API error (HTTP %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	// Try to extract token from common fields
+	var payload map[string]interface{}
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return "", fmt.Errorf("failed to parse authorize response: %w", err)
+	}
+
+	token := firstNonEmpty(
+		lookupString(payload, "token"),
+		lookupString(payload, "auth_token"),
+		lookupString(payload, "access_token"),
+		lookupNestedString(payload, "data", "token"),
+		lookupNestedString(payload, "data", "auth_token"),
+		lookupNestedString(payload, "data", "access_token"),
+	)
+
+	if token == "" {
+		return "", fmt.Errorf("no token found in authorize response: %s", string(respBody))
+	}
+
+	fmt.Printf("[CASHFREE] authorize succeeded, token length=%d\n", len(token))
+	return token, nil
 }
 
 func minInt(a, b int) int {
@@ -315,7 +389,8 @@ func buildCashfreeTransferRequest(req TransferRequest) (*cashfreeTransferReq, er
 		TransferID:       req.PaymentID.String(),
 		TransferAmount:   fmt.Sprintf("%.2f", float64(req.AmountCents)/100.0),
 		TransferCurrency: "INR",
-		TransferRemarks:  firstNonEmpty(req.IdempotencyKey, fmt.Sprintf("MySlotMate payout %s", req.PaymentID)),
+		// Use a concise, provider-friendly remark for payouts
+		TransferRemarks: "payout withdrawal",
 		Beneficiary: cashfreeBeneficiaryDetails{
 			BeneficiaryName: beneficiaryName,
 		},
