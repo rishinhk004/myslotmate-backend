@@ -15,6 +15,8 @@ type TransferRequest struct {
 	AccountNumber   string // decrypted at call time
 	IFSC            string
 	BeneficiaryName string
+	// Optional beneficiary id to reuse an existing registered beneId at provider
+	BeneID string
 	// UPI details
 	UPIID string
 	// Method type
@@ -32,6 +34,9 @@ type TransferResponse struct {
 
 // Provider is the Strategy interface for external payout providers (Razorpay, Cashfree, etc.).
 type Provider interface {
+	// RegisterBeneficiary creates/registers a beneficiary without initiating a transfer.
+	RegisterBeneficiary(ctx context.Context, req TransferRequest) error
+
 	// InitiateTransfer sends money to the host's bank/UPI.
 	InitiateTransfer(ctx context.Context, req TransferRequest) (*TransferResponse, error)
 

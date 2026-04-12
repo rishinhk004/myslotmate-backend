@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"myslotmate-backend/internal/lib/event"
@@ -138,8 +139,12 @@ func (s *payoutService) AddPayoutMethod(ctx context.Context, hostID uuid.UUID, r
 		encrypted = req.AccountNumber
 	}
 
+	methodID := uuid.New()
+	// Generate Cashfree beneficiary ID: remove hyphens from method ID (alphanumeric only)
+	cashfreBeneID := strings.ReplaceAll(methodID.String(), "-", "")
+
 	pm := &models.PayoutMethod{
-		ID:                     uuid.New(),
+		ID:                     methodID,
 		HostID:                 &hostID,
 		Type:                   req.Type,
 		BankName:               req.BankName,
@@ -149,16 +154,57 @@ func (s *payoutService) AddPayoutMethod(ctx context.Context, hostID uuid.UUID, r
 		IFSC:                   req.IFSC,
 		BeneficiaryName:        req.BeneficiaryName,
 		UPIID:                  req.UPIID,
+		CashfreeBeID:           &cashfreBeneID,
 		IsVerified:             true, // auto-verified by default
 		IsPrimary:              isPrimary,
 		CreatedAt:              time.Now(),
 		UpdatedAt:              time.Now(),
 	}
 
-	fmt.Printf("[PAYOUT] AddPayoutMethod: creating method - methodID=%s, verified=true, primary=%v\n", pm.ID, isPrimary)
+	fmt.Printf("[PAYOUT] AddPayoutMethod: creating method - methodID=%s, cashfreBeneID=%s, verified=true, primary=%v\n", pm.ID, cashfreBeneID, isPrimary)
 	if err := s.payoutRepo.CreatePayoutMethod(ctx, pm); err != nil {
 		fmt.Printf("[PAYOUT] AddPayoutMethod: create error: %v\n", err)
 		return nil, err
+	}
+
+	// Create beneficiary on Cashfree
+	fmt.Printf("[PAYOUT] AddPayoutMethod: creating beneficiary on Cashfree...\n")
+	transferReq := payout.TransferRequest{
+		BeneID:     cashfreBeneID,
+		MethodType: string(req.Type),
+	}
+
+	// Set beneficiary name (handle nil case)
+	if req.BeneficiaryName != nil {
+		transferReq.BeneficiaryName = *req.BeneficiaryName
+	} else {
+		transferReq.BeneficiaryName = "MySlotMate Host"
+	}
+
+	// Set bank or UPI details
+	if req.Type == models.PayoutMethodBank {
+		if encrypted != nil {
+			transferReq.AccountNumber = *encrypted
+		}
+		if req.IFSC != nil {
+			transferReq.IFSC = *req.IFSC
+		}
+		if req.BankName != nil {
+			transferReq.BankName = *req.BankName
+		}
+	} else if req.Type == models.PayoutMethodUPI {
+		if req.UPIID != nil {
+			transferReq.UPIID = *req.UPIID
+		}
+	}
+
+	// Call provider to create beneficiary on Cashfree
+	err = s.provider.RegisterBeneficiary(ctx, transferReq)
+	if err != nil {
+		fmt.Printf("[PAYOUT] Warning: failed to create beneficiary on Cashfree during method creation: %v\n", err)
+		// Don't fail the entire AddPayoutMethod - the beneficiary will be created during first withdrawal
+	} else {
+		fmt.Printf("[PAYOUT] AddPayoutMethod: beneficiary created on Cashfree successfully\n")
 	}
 
 	fmt.Printf("[PAYOUT] AddPayoutMethod: method created successfully\n")
@@ -402,6 +448,13 @@ func (s *payoutService) RequestWithdrawal(ctx context.Context, hostID uuid.UUID,
 		AmountCents:    req.AmountCents,
 		MethodType:     string(payoutMethod.Type),
 		IdempotencyKey: idempotencyKey,
+	}
+	// Use the Cashfree beneficiary ID stored in the payout method
+	if payoutMethod.CashfreeBeID != nil {
+		transferReq.BeneID = *payoutMethod.CashfreeBeID
+	} else {
+		// Fallback: generate from method ID if not stored (shouldn't happen in normal flow)
+		transferReq.BeneID = strings.ReplaceAll(payoutMethod.ID.String(), "-", "")
 	}
 	if payoutMethod.BeneficiaryName != nil {
 		transferReq.BeneficiaryName = *payoutMethod.BeneficiaryName
@@ -909,6 +962,13 @@ func (s *payoutService) RequestAdminWithdrawal(ctx context.Context, req Withdraw
 		AmountCents:    req.AmountCents,
 		MethodType:     string(payoutMethod.Type),
 		IdempotencyKey: idempotencyKey,
+	}
+	// Use the Cashfree beneficiary ID stored in the payout method
+	if payoutMethod.CashfreeBeID != nil {
+		transferReq.BeneID = *payoutMethod.CashfreeBeID
+	} else {
+		// Fallback: generate from method ID if not stored (shouldn't happen in normal flow)
+		transferReq.BeneID = strings.ReplaceAll(payoutMethod.ID.String(), "-", "")
 	}
 	if payoutMethod.BeneficiaryName != nil {
 		transferReq.BeneficiaryName = *payoutMethod.BeneficiaryName
