@@ -18,6 +18,7 @@ type PayoutMethod struct {
 	IFSC                   *string          `db:"ifsc" json:"ifsc,omitempty"`
 	BeneficiaryName        *string          `db:"beneficiary_name" json:"beneficiary_name,omitempty"`
 	UPIID                  *string          `db:"upi_id" json:"upi_id,omitempty"`
+	CashfreeBeID           *string          `db:"cashfree_be_id" json:"cashfree_be_id,omitempty"` // Cashfree beneficiary ID
 	IsVerified             bool             `db:"is_verified" json:"is_verified"`
 	IsPrimary              bool             `db:"is_primary" json:"is_primary"`
 	CreatedAt              time.Time        `db:"created_at" json:"created_at"`

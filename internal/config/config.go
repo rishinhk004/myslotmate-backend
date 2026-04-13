@@ -132,7 +132,14 @@ func Load() (*Config, error) {
 			PaymentWebhookSecret: getEnv("RAZORPAY_PAYMENT_WEBHOOK_SECRET", ""),
 		},
 		Cashfree: CashfreeConfig{
-			BaseURL:       getEnv("CASHFREE_BASE_URL", "https://payout-api.cashfree.com"),
+			// Prefer the explicit payout API base URL; fall back to legacy CASHFREE_BASE_URL.
+			BaseURL: func() string {
+				if v := getEnv("CASHFREE_PAYOUT_BASE_URL", ""); v != "" {
+					fmt.Printf("[CONFIG] Using CASHFREE_PAYOUT_BASE_URL: %s\n", v)
+					return v
+				}
+				return getEnv("CASHFREE_BASE_URL", "https://payout-api.cashfree.com")
+			}(),
 			ClientID:      getEnv("CASHFREE_CLIENT_ID", ""),
 			ClientSecret:  getEnv("CASHFREE_CLIENT_SECRET", ""),
 			WebhookSecret: getEnv("CASHFREE_WEBHOOK_SECRET", ""),

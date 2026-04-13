@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -28,6 +29,7 @@ type CashfreeConfig struct {
 	PublicKey     string // CASHFREE_PUBLIC_KEY (PEM-encoded RSA public key for signature generation)
 	WebhookSecret string // CASHFREE_WEBHOOK_SECRET
 	APIVersion    string // CASHFREE_API_VERSION
+	BearerToken   string // CASHFREE_BEARER_TOKEN (optional)
 }
 
 // CashfreeProvider implements Provider using Cashfree Payouts API.
@@ -57,31 +59,122 @@ func NewCashfreeProvider(cfg CashfreeConfig) Provider {
 }
 
 type cashfreeTransferReq struct {
-	TransferID       string                     `json:"transfer_id"`
-	TransferAmount   string                     `json:"transfer_amount"`
-	TransferCurrency string                     `json:"transfer_currency"`
-	TransferMode     string                     `json:"transfer_mode"`
-	TransferRemarks  string                     `json:"transfer_remarks,omitempty"`
-	Beneficiary      cashfreeBeneficiaryDetails `json:"beneficiary_details"`
+	TransferID         string                        `json:"transfer_id"`
+	TransferAmount     string                        `json:"transfer_amount"`
+	TransferCurrency   string                        `json:"transfer_currency"`
+	TransferMode       string                        `json:"transfer_mode"`
+	TransferRemarks    string                        `json:"transfer_remarks,omitempty"`
+	BeneficiaryDetails cashfreerV2BeneficiaryDetails `json:"beneficiary_details"`
 }
 
-type cashfreeBeneficiaryDetails struct {
-	BeneficiaryName              string                               `json:"beneficiary_name,omitempty"`
-	BeneficiaryInstrumentDetails cashfreeBeneficiaryInstrumentDetails `json:"beneficiary_instrument_details"`
+type cashfreerV2BeneficiaryDetails struct {
+	BeneficiaryID string `json:"beneficiary_id"`
 }
 
-type cashfreeBeneficiaryInstrumentDetails struct {
+type cashfreeV2BeneficiaryRequest struct {
+	BeneficiaryID                string                      `json:"beneficiary_id"`
+	BeneficiaryName              string                      `json:"beneficiary_name"`
+	BeneficiaryInstrumentDetails cashfreeV2InstrumentDetails `json:"beneficiary_instrument_details"`
+	BeneficiaryContactDetails    *cashfreeV2ContactDetails   `json:"beneficiary_contact_details,omitempty"`
+}
+
+type cashfreeV2InstrumentDetails struct {
 	BankAccountNumber string `json:"bank_account_number,omitempty"`
 	BankIFSC          string `json:"bank_ifsc,omitempty"`
 	VPA               string `json:"vpa,omitempty"`
 }
 
+type cashfreeV2ContactDetails struct {
+	BeneficiaryEmail       string `json:"beneficiary_email,omitempty"`
+	BeneficiaryPhone       string `json:"beneficiary_phone,omitempty"`
+	BeneficiaryCountryCode string `json:"beneficiary_country_code,omitempty"`
+	BeneficiaryAddress     string `json:"beneficiary_address,omitempty"`
+	BeneficiaryCity        string `json:"beneficiary_city,omitempty"`
+	BeneficiaryState       string `json:"beneficiary_state,omitempty"`
+	BeneficiaryPostalCode  string `json:"beneficiary_postal_code,omitempty"`
+}
+
+// RegisterBeneficiary creates/registers a beneficiary on Cashfree without initiating a transfer.
+func (p *CashfreeProvider) RegisterBeneficiary(ctx context.Context, req TransferRequest) error {
+	fmt.Printf("[CASHFREE] RegisterBeneficiary called: beneId=%s, name=%s, type=%s\n", req.BeneID, req.BeneficiaryName, req.MethodType)
+
+	// 1) Authorize to get a short-lived token for payouts
+	token, err := p.authorize(ctx)
+	if err != nil {
+		fmt.Printf("[CASHFREE] RegisterBeneficiary authorize error: %v\n", err)
+		return fmt.Errorf("failed to authorize cashfree payout: %w", err)
+	}
+	p.cfg.BearerToken = token
+
+	// 2) Beneficiary id must be provided by caller (payout method ID from service layer)
+	beneID := strings.TrimSpace(req.BeneID)
+	if beneID == "" {
+		return fmt.Errorf("beneficiary ID is required (must be provided by service layer)")
+	}
+
+	fmt.Printf("[CASHFREE] RegisterBeneficiary: checking beneficiary ID: %s\n", beneID)
+
+	// Try to create/register the beneficiary
+	// If it already exists, Cashfree will handle the idempotency and return an error we can safely ignore
+	fmt.Printf("[CASHFREE] RegisterBeneficiary: attempting to create beneficiary (idempotent operation)...\n")
+	if err := p.addBeneficiary(ctx, beneID, req); err != nil {
+		// Check if error is "already exists" - if so, continue (idempotent)
+		if strings.Contains(err.Error(), "already") || strings.Contains(err.Error(), "exists") {
+			fmt.Printf("[CASHFREE] RegisterBeneficiary: beneficiary already exists (expected for idempotent operation)\n")
+		} else {
+			// Real error
+			fmt.Printf("[CASHFREE] RegisterBeneficiary addBeneficiary error: %v\n", err)
+			return fmt.Errorf("failed to create beneficiary: %w", err)
+		}
+	} else {
+		fmt.Printf("[CASHFREE] RegisterBeneficiary: beneficiary created successfully\n")
+	}
+
+	fmt.Printf("[CASHFREE] RegisterBeneficiary succeeded: beneId=%s\n", beneID)
+	return nil
+}
+
 func (p *CashfreeProvider) InitiateTransfer(ctx context.Context, req TransferRequest) (*TransferResponse, error) {
+	// 1) Authorize to get a short-lived token for payouts
+	token, err := p.authorize(ctx)
+	if err != nil {
+		fmt.Printf("[CASHFREE] Authorize error: %v\n", err)
+		return nil, fmt.Errorf("failed to authorize cashfree payout: %w", err)
+	}
+	p.cfg.BearerToken = token
+
+	// 2) Beneficiary id must be provided by caller (payout method ID from service layer)
+	beneID := strings.TrimSpace(req.BeneID)
+	if beneID == "" {
+		return nil, fmt.Errorf("beneficiary ID is required (must be provided by service layer)")
+	}
+
+	fmt.Printf("[CASHFREE] Step 2: Checking beneficiary ID: %s\n", beneID)
+
+	// Try to create/register the beneficiary
+	// If it already exists, Cashfree will handle the idempotency and return an error we can safely ignore
+	fmt.Printf("[CASHFREE] Attempting to create beneficiary (idempotent operation)...\n")
+	if err := p.addBeneficiary(ctx, beneID, req); err != nil {
+		// Check if error is "already exists" - if so, continue (idempotent)
+		if strings.Contains(err.Error(), "already") || strings.Contains(err.Error(), "exists") {
+			fmt.Printf("[CASHFREE] Beneficiary already exists (expected for idempotent operation)\n")
+		} else {
+			// Real error
+			fmt.Printf("[CASHFREE] addBeneficiary error: %v\n", err)
+			return nil, fmt.Errorf("failed to create beneficiary: %w", err)
+		}
+	} else {
+		fmt.Printf("[CASHFREE] Beneficiary created/verified successfully\n")
+	}
+
+	// 3) Build transfer request and include the beneId
 	payoutReq, err := buildCashfreeTransferRequest(req)
 	if err != nil {
 		fmt.Printf("[CASHFREE] InitiateTransfer error: %v\n", err)
 		return nil, err
 	}
+	// Set beneficiary ID in the transfer request
+	payoutReq.BeneficiaryDetails.BeneficiaryID = beneID
 
 	body, err := json.Marshal(payoutReq)
 	if err != nil {
@@ -89,6 +182,7 @@ func (p *CashfreeProvider) InitiateTransfer(ctx context.Context, req TransferReq
 		return nil, fmt.Errorf("failed to marshal cashfree payout request: %w", err)
 	}
 
+	// Use the Direct Transfer v1.2 endpoint for payout requests
 	fmt.Printf("[CASHFREE] InitiateTransfer request: paymentID=%s, amount=%d, method=%s, url=%s\n",
 		req.PaymentID, req.AmountCents, req.MethodType, strings.TrimRight(p.cfg.BaseURL, "/")+"/payout/transfers")
 
@@ -234,7 +328,12 @@ func (p *CashfreeProvider) setHeaders(req *http.Request) error {
 	req.Header.Set("x-cf-signature", sig)
 	// Include timestamp header used to create the signature
 	req.Header.Set("x-cf-timestamp", strconv.FormatInt(timestamp, 10))
-	fmt.Printf("[CASHFREE] Headers set with x-cf-signature header\n")
+	// Add Authorization header if we have a bearer token
+	if strings.TrimSpace(p.cfg.BearerToken) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(p.cfg.BearerToken))
+	}
+
+	fmt.Printf("[CASHFREE] Headers set with x-cf-signature header %s\n", sig)
 	return nil
 }
 
@@ -280,7 +379,7 @@ func (p *CashfreeProvider) generateRSASignature() (string, int64, error) {
 	fmt.Printf("[CASHFREE_PROVIDER] RSA public key parsed successfully (keySize=%d bits)\n", rsaPubKey.N.BitLen())
 
 	// Encrypt using RSA PKCS#1 v1.5 (Cashfree requirement for 2FA)
-	ciphertext, err := rsa.EncryptPKCS1v15(rand.Reader, rsaPubKey, messageBytes)
+	ciphertext, err := rsa.EncryptOAEP(sha1.New(), rand.Reader, rsaPubKey, messageBytes, nil)
 	if err != nil {
 		fmt.Printf("[CASHFREE_PROVIDER] ERROR: RSA PKCS#1 v1.5 encryption failed: %v\n", err)
 		return "", 0, fmt.Errorf("failed to encrypt with RSA: %w", err)
@@ -296,6 +395,215 @@ func (p *CashfreeProvider) generateRSASignature() (string, int64, error) {
 	return signature, timestamp, nil
 }
 
+// authorize calls Cashfree /payout/v1/authorize to obtain a short-lived payout token.
+func (p *CashfreeProvider) authorize(ctx context.Context) (string, error) {
+	// Generate RSA signature for the authorize call
+	sig, timestamp, err := p.generateRSASignature()
+	if err != nil {
+		return "", err
+	}
+
+	url := strings.TrimRight(p.cfg.BaseURL, "/") + "/payout/v1/authorize"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create authorize request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("X-Client-Id", p.cfg.ClientID)
+	httpReq.Header.Set("X-Client-Secret", p.cfg.ClientSecret)
+	httpReq.Header.Set("X-Cf-Signature", sig)
+	httpReq.Header.Set("X-Cf-Timestamp", strconv.FormatInt(timestamp, 10))
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("authorize API call failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read authorize response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("authorize API error (HTTP %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	// Try to extract token from common fields
+	var payload map[string]interface{}
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return "", fmt.Errorf("failed to parse authorize response: %w", err)
+	}
+
+	token := firstNonEmpty(
+		lookupString(payload, "token"),
+		lookupString(payload, "auth_token"),
+		lookupString(payload, "access_token"),
+		lookupNestedString(payload, "data", "token"),
+		lookupNestedString(payload, "data", "auth_token"),
+		lookupNestedString(payload, "data", "access_token"),
+	)
+
+	if token == "" {
+		return "", fmt.Errorf("no token found in authorize response: %s", string(respBody))
+	}
+
+	fmt.Printf("[CASHFREE] authorize succeeded, token length=%d\n", len(token))
+	return token, nil
+}
+
+// getBeneficiary queries Cashfree for the provided beneId. Returns true when found.
+func (p *CashfreeProvider) getBeneficiary(ctx context.Context, beneId string) (bool, error) {
+	url := strings.TrimRight(p.cfg.BaseURL, "/") + "/payout/beneficiary/" + beneId
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to create getBeneficiary request: %w", err)
+	}
+
+	// Set headers
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-version", p.cfg.APIVersion)
+	httpReq.Header.Set("x-client-id", p.cfg.ClientID)
+	httpReq.Header.Set("x-client-secret", p.cfg.ClientSecret)
+
+	// Attach bearer token if available
+	if strings.TrimSpace(p.cfg.BearerToken) != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(p.cfg.BearerToken))
+	}
+	// include signature for extra safety
+	sig, ts, sigErr := p.generateRSASignature()
+	if sigErr == nil {
+		httpReq.Header.Set("x-cf-signature", sig)
+		httpReq.Header.Set("x-cf-timestamp", strconv.FormatInt(ts, 10))
+	}
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return false, fmt.Errorf("getBeneficiary API call failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Printf("[CASHFREE] getBeneficiary response: status=%d, body=%s\n", resp.StatusCode, string(body))
+
+	if resp.StatusCode == 404 {
+		fmt.Printf("[CASHFREE] Beneficiary not found: %s\n", string(body))
+		return false, fmt.Errorf("beneficiary not found: %s", string(body))
+	}
+	if resp.StatusCode >= 400 {
+		return false, fmt.Errorf("getBeneficiary API error (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	// Parse JSON response and ensure beneficiary status is VERIFIED
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false, fmt.Errorf("failed to parse getBeneficiary response: %w", err)
+	}
+
+	// Expected response shape: check both top-level and nested data.beneficiary_status
+	dataStatus := firstNonEmpty(
+		lookupString(payload, "beneficiary_status"),
+		lookupNestedString(payload, "data", "beneficiary_status"),
+	)
+	fmt.Printf("[CASHFREE] Beneficiary status: %s\n", dataStatus)
+
+	if strings.TrimSpace(strings.ToUpper(dataStatus)) == "VERIFIED" {
+		fmt.Printf("[CASHFREE] Beneficiary is VERIFIED\n")
+		return true, nil
+	}
+
+	// If status present but not VERIFIED, return an error so caller can decide
+	if dataStatus != "" {
+		return false, fmt.Errorf("beneficiary exists but not verified: %s", dataStatus)
+	}
+
+	// If no beneficiary_status, treat as found but unknown state
+	fmt.Printf("[CASHFREE] Beneficiary status unknown, treating as found\n")
+	return true, nil
+}
+
+// addBeneficiary registers a beneficiary with Cashfree using provided transfer request details.
+// Uses Cashfree Payouts API v2 format.
+func (p *CashfreeProvider) addBeneficiary(ctx context.Context, beneId string, req TransferRequest) error {
+	url := strings.TrimRight(p.cfg.BaseURL, "/") + "/payout/beneficiary"
+
+	beneficiaryName := strings.TrimSpace(req.BeneficiaryName)
+	if beneficiaryName == "" {
+		beneficiaryName = "MySlotMate Host"
+	}
+
+	fmt.Printf("[CASHFREE] addBeneficiary: methodType=%s, beneId=%s, name=%s, account=%s, ifsc=%s, upi=%s\n",
+		req.MethodType, beneId, beneficiaryName, req.AccountNumber, req.IFSC, req.UPIID)
+
+	// Build v2 request structure
+	reqPayload := &cashfreeV2BeneficiaryRequest{
+		BeneficiaryID:   beneId,
+		BeneficiaryName: beneficiaryName,
+		BeneficiaryInstrumentDetails: cashfreeV2InstrumentDetails{
+			BankAccountNumber: req.AccountNumber,
+			BankIFSC:          req.IFSC,
+			VPA:               req.UPIID,
+		},
+		BeneficiaryContactDetails: &cashfreeV2ContactDetails{
+			// We can leave contact details mostly empty since we only have essential bank/UPI info
+		},
+	}
+
+	bodyBytes, err := json.Marshal(reqPayload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal addBeneficiary payload: %w", err)
+	}
+
+	fmt.Printf("[CASHFREE] addBeneficiary request payload: %s\n", string(bodyBytes))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return fmt.Errorf("failed to create addBeneficiary request: %w", err)
+	}
+
+	// Set headers
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-version", p.cfg.APIVersion)
+	httpReq.Header.Set("x-client-id", p.cfg.ClientID)
+	httpReq.Header.Set("x-client-secret", p.cfg.ClientSecret)
+
+	// Attach bearer token if available
+	if strings.TrimSpace(p.cfg.BearerToken) != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(p.cfg.BearerToken))
+	}
+	// include signature headers for added safety
+	sig, ts, sigErr := p.generateRSASignature()
+	if sigErr == nil {
+		httpReq.Header.Set("x-cf-signature", sig)
+		httpReq.Header.Set("x-cf-timestamp", strconv.FormatInt(ts, 10))
+	}
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("addBeneficiary API call failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	fmt.Printf("[CASHFREE] addBeneficiary response: status=%d, body=%s\n", resp.StatusCode, string(respBody))
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("addBeneficiary API error (HTTP %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	// Parse response to verify beneficiary was created
+	var addResp map[string]interface{}
+	if err := json.Unmarshal(respBody, &addResp); err != nil {
+		fmt.Printf("[CASHFREE] Warning: could not parse addBeneficiary response: %v\n", err)
+		// But don't fail - assume it worked if status was < 400
+	}
+
+	fmt.Printf("[CASHFREE] addBeneficiary completed: beneId=%s, response=%+v\n", beneId, addResp)
+	return nil
+}
+
 func minInt(a, b int) int {
 	if a < b {
 		return a
@@ -304,18 +612,14 @@ func minInt(a, b int) int {
 }
 
 func buildCashfreeTransferRequest(req TransferRequest) (*cashfreeTransferReq, error) {
-	beneficiaryName := strings.TrimSpace(req.BeneficiaryName)
-	if beneficiaryName == "" {
-		beneficiaryName = "MySlotMate Host"
-	}
-
 	payoutReq := &cashfreeTransferReq{
 		TransferID:       req.PaymentID.String(),
 		TransferAmount:   fmt.Sprintf("%.2f", float64(req.AmountCents)/100.0),
 		TransferCurrency: "INR",
-		TransferRemarks:  firstNonEmpty(req.IdempotencyKey, fmt.Sprintf("MySlotMate payout %s", req.PaymentID)),
-		Beneficiary: cashfreeBeneficiaryDetails{
-			BeneficiaryName: beneficiaryName,
+		// Use a concise, provider-friendly remark for payouts
+		TransferRemarks: "payout withdrawal",
+		BeneficiaryDetails: cashfreerV2BeneficiaryDetails{
+			BeneficiaryID: "", // Will be set in InitiateTransfer
 		},
 	}
 
@@ -325,19 +629,12 @@ func buildCashfreeTransferRequest(req TransferRequest) (*cashfreeTransferReq, er
 			return nil, fmt.Errorf("bank payout requires account number and IFSC")
 		}
 		payoutReq.TransferMode = "banktransfer"
-		payoutReq.Beneficiary.BeneficiaryInstrumentDetails = cashfreeBeneficiaryInstrumentDetails{
-			BankAccountNumber: req.AccountNumber,
-			BankIFSC:          req.IFSC,
-		}
 
 	case "upi":
 		if req.UPIID == "" {
 			return nil, fmt.Errorf("upi payout requires upi id")
 		}
 		payoutReq.TransferMode = "upi"
-		payoutReq.Beneficiary.BeneficiaryInstrumentDetails = cashfreeBeneficiaryInstrumentDetails{
-			VPA: req.UPIID,
-		}
 
 	default:
 		return nil, fmt.Errorf("unsupported payout method type: %s", req.MethodType)
