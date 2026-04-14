@@ -71,6 +71,8 @@ tags:
     description: Support tickets & report-a-participant
   - name: Upload
     description: Generic file upload (AWS S3)
+  - name: Blogs
+    description: Blog posts (admin-only creation, public read)
   - name: Webhooks
     description: Cashfree payout + Razorpay payment webhook receivers
   - name: Admin
@@ -2182,6 +2184,276 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  # ── Blogs ────────────────────────────────────
+  /blogs:
+    get:
+      tags: [Blogs]
+      summary: Get all published blogs with pagination
+      operationId: listPublishedBlogs
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+      responses:
+        "200":
+          description: List of published blogs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_BlogArray"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [Blogs]
+      summary: Create a new blog post (admin only)
+      operationId: createBlog
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBlogRequest"
+      responses:
+        "201":
+          description: Blog created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Blog"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Forbidden - admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /blogs/{blogID}:
+    get:
+      tags: [Blogs]
+      summary: Get a single blog post by ID
+      operationId: getBlog
+      parameters:
+        - name: blogID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Blog post
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Blog"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [Blogs]
+      summary: Update a blog post (admin only)
+      operationId: updateBlog
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: blogID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateBlogRequest"
+      responses:
+        "200":
+          description: Blog updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Blog"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Forbidden - admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [Blogs]
+      summary: Delete a blog post (admin only)
+      operationId: deleteBlog
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: blogID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Blog deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Message"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Forbidden - admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /blogs/{blogID}/publish:
+    post:
+      tags: [Blogs]
+      summary: Publish a blog post (admin only)
+      operationId: publishBlog
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: blogID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Blog published successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Blog"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Forbidden - admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /blogs/{blogID}/unpublish:
+    post:
+      tags: [Blogs]
+      summary: Unpublish a blog post (admin only)
+      operationId: unpublishBlog
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: blogID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Blog unpublished successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_Blog"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Forbidden - admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /blogs/category/{category}:
+    get:
+      tags: [Blogs]
+      summary: Get published blogs filtered by category
+      operationId: listBlogsByCategory
+      parameters:
+        - name: category
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [Hosting, Wellness, Adventure]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+      responses:
+        "200":
+          description: List of published blogs in the category
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse_BlogArray"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
 # ──────────────────────────────────────────────
 # COMPONENTS
 # ──────────────────────────────────────────────
@@ -4033,6 +4305,116 @@ components:
           format: uuid
           nullable: true
           description: User/admin/system who created this entry
+
+    # ── Blog Models ───────────────────────────
+
+    Blog:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        category:
+          type: string
+          enum: [Hosting, Wellness, Adventure]
+        content:
+          type: string
+        cover_image_url:
+          type: string
+          nullable: true
+        author_id:
+          type: string
+          format: uuid
+        author_name:
+          type: string
+        read_time_minutes:
+          type: integer
+          example: 5
+        published_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    SuccessResponse_Blog:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/Blog"
+
+    SuccessResponse_BlogArray:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Blog"
+
+    CreateBlogRequest:
+      type: object
+      required: [title, category, content]
+      properties:
+        title:
+          type: string
+          example: "How to Plan the Perfect Experience"
+        description:
+          type: string
+          nullable: true
+          example: "Learn the key tips and tricks for hosting an unforgettable experience."
+        category:
+          type: string
+          enum: [Hosting, Wellness, Adventure]
+          example: "Hosting"
+        content:
+          type: string
+          example: "This is the full blog content..."
+        cover_image_url:
+          type: string
+          nullable: true
+          example: "https://s3.amazonaws.com/bucket/image.jpg"
+        read_time_minutes:
+          type: integer
+          nullable: true
+          example: 5
+
+    UpdateBlogRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        category:
+          type: string
+          enum: [Hosting, Wellness, Adventure]
+          nullable: true
+        content:
+          type: string
+          nullable: true
+        cover_image_url:
+          type: string
+          nullable: true
+        read_time_minutes:
+          type: integer
+          nullable: true
 
     LedgerTransactionType:
       type: string

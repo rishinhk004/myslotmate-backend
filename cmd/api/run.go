@@ -114,6 +114,7 @@ func main() {
 	supportRepo := repository.NewSupportRepository(dbConn)
 	savedExpRepo := repository.NewSavedExperienceRepository(dbConn)
 	ledgerRepo := repository.NewTransactionLedgerRepository(dbConn)
+	blogRepo := repository.NewBlogRepository(dbConn)
 
 	// Ensure platform account exists for fee tracking
 	if err := ensurePlatformAccount(ctx, accountRepo); err != nil {
@@ -205,6 +206,7 @@ func main() {
 	supportController := controller.NewSupportController(supportService, uploadService)
 	uploadController := controller.NewUploadController(uploadService)
 	adminController := controller.NewAdminController(hostService, payoutService, fbApp.Auth, cfg.AdminEmail)
+	blogController := controller.NewBlogController(blogRepo, fbApp.Auth, cfg.AdminEmail)
 
 	router := server.NewRouter(
 		fbApp,
@@ -220,6 +222,7 @@ func main() {
 		supportController,
 		uploadController,
 		adminController,
+		blogController,
 	)
 
 	srv := &http.Server{

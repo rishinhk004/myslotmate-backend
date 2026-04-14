@@ -48,6 +48,7 @@ func NewRouter(
 	supportCtrl *controller.SupportController,
 	uploadCtrl *controller.UploadController,
 	adminCtrl *controller.AdminController,
+	blogCtrl *controller.BlogController,
 ) http.Handler {
 	r := chi.NewRouter()
 
@@ -123,6 +124,10 @@ func NewRouter(
 
 	if adminCtrl != nil {
 		adminCtrl.RegisterRoutes(r)
+	}
+
+	if blogCtrl != nil {
+		blogCtrl.RegisterRoutes(r)
 	}
 
 	return r
