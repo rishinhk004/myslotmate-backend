@@ -6,6 +6,7 @@ import (
 	"myslotmate-backend/internal/config"
 	"myslotmate-backend/internal/models"
 	"myslotmate-backend/internal/repository"
+	"strings"
 
 	"github.com/twilio/twilio-go"
 	twilioapiv2010 "github.com/twilio/twilio-go/rest/api/v2010"
@@ -19,6 +20,32 @@ type TwilioNotificationService struct {
 	eventRepo   repository.EventRepository
 	userRepo    repository.UserRepository
 	emailSvc    *EmailService
+}
+
+// formatPhoneNumber ensures phone number has country code (+91 for India)
+// Input: "9876543210" or "09876543210"
+// Output: "+919876543210"
+func formatPhoneNumber(phoneNumber string) string {
+	// Remove any spaces or special characters except digits and +
+	phoneNumber = strings.TrimSpace(phoneNumber)
+
+	// If already has +91, return as is
+	if strings.HasPrefix(phoneNumber, "+91") {
+		return phoneNumber
+	}
+
+	// If starts with 0, remove it (common Indian format)
+	if strings.HasPrefix(phoneNumber, "0") {
+		phoneNumber = phoneNumber[1:]
+	}
+
+	// If starts with +, just ensure it's formatted right (shouldn't happen for India but handle it)
+	if strings.HasPrefix(phoneNumber, "+") {
+		return phoneNumber
+	}
+
+	// Add +91 prefix for India
+	return "+91" + phoneNumber
 }
 
 // NotificationService interface defines methods for sending notifications
@@ -61,10 +88,10 @@ func (s *TwilioNotificationService) SendBookingConfirmationWhatsapp(ctx context.
 		booking.Quantity,
 	)
 
-	// Send WhatsApp message via Twilio
+	// Send WhatsApp message via Twilio with formatted phone number
 	params := &twilioapiv2010.CreateMessageParams{}
-	params.SetFrom("whatsapp:" + s.cfg.WhatsappNumber)
-	params.SetTo("whatsapp:" + user.PhnNumber)
+	params.SetFrom("whatsapp:" + formatPhoneNumber(s.cfg.WhatsappNumber))
+	params.SetTo("whatsapp:" + formatPhoneNumber(user.PhnNumber))
 	params.SetBody(message)
 
 	_, err := s.client.Api.CreateMessage(params)
@@ -120,10 +147,10 @@ func (s *TwilioNotificationService) SendEventReminderWhatsapp(ctx context.Contex
 		event.Time.Format("Jan 2, 2006 3:04 PM"),
 	)
 
-	// Send WhatsApp reminder via Twilio
+	// Send WhatsApp reminder via Twilio with formatted phone number
 	params := &twilioapiv2010.CreateMessageParams{}
-	params.SetFrom("whatsapp:" + s.cfg.WhatsappNumber)
-	params.SetTo("whatsapp:" + user.PhnNumber)
+	params.SetFrom("whatsapp:" + formatPhoneNumber(s.cfg.WhatsappNumber))
+	params.SetTo("whatsapp:" + formatPhoneNumber(user.PhnNumber))
 	params.SetBody(message)
 
 	_, err := s.client.Api.CreateMessage(params)
