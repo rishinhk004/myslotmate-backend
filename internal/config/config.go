@@ -77,6 +77,20 @@ type CashfreeConfig struct {
 	APIVersion    string
 }
 
+// GeminiConfig holds Gemini API credentials for the RAG chatbot.
+type GeminiConfig struct {
+	APIKey             string
+	EmbeddingDimension int
+}
+
+// PineconeConfig holds Pinecone vector database credentials
+type PineconeConfig struct {
+	APIKey      string
+	Host        string
+	IndexName   string
+	Environment string
+}
+
 type Config struct {
 	HTTPPort          string
 	AdminEmail        string
@@ -90,6 +104,8 @@ type Config struct {
 	S3                S3Config
 	Twilio            TwilioConfig
 	SMTP              SMTPConfig
+	Gemini            GeminiConfig
+	Pinecone          PineconeConfig
 }
 
 // Load reads configuration from environment variables (optionally via .env).
@@ -159,6 +175,16 @@ func Load() (*Config, error) {
 			User:     getEnv("SMTP_USER", ""),
 			Password: getEnv("SMTP_PASSWORD", ""),
 			FromName: getEnv("SMTP_FROM_NAME", "MySlotMate"),
+		},
+		Gemini: GeminiConfig{
+			APIKey:             getEnv("GEMINI_API_KEY", ""),
+			EmbeddingDimension: parseEnvInt("GEMINI_EMBEDDING_DIMENSION", 1536),
+		},
+		Pinecone: PineconeConfig{
+			APIKey:      getEnv("PINECONE_API_KEY", ""),
+			Host:        getEnv("PINECONE_HOST", ""),
+			IndexName:   getEnv("PINECONE_INDEX_NAME", "myslotmate-rag"),
+			Environment: getEnv("PINECONE_ENVIRONMENT", "us-east-1"),
 		},
 	}
 
