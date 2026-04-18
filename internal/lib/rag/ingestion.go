@@ -147,16 +147,35 @@ func (d *DataIngestionEngine) loadEvents(ctx context.Context) ([]Document, error
 		SELECT
 			e.id,
 			COALESCE(e.title, ''),
+			COALESCE(e.hook_line, ''),
 			COALESCE(e.description, ''),
-			COALESCE(e.category::text, ''),
+			COALESCE(e.mood::text, ''),
 			COALESCE(e.location, ''),
+			e.is_online,
+			COALESCE(e.meeting_link, ''),
+			COALESCE(e.google_maps_url, ''),
+			COALESCE(e.duration_minutes, 0),
+			COALESCE(e.min_group_size, 0),
+			COALESCE(e.max_group_size, 0),
+			COALESCE(e.capacity, 0),
+			COALESCE(e.price_cents, 0),
+			e.is_free,
+			e.time,
+			e.end_time,
+			e.is_recurring,
+			COALESCE(e.recurrence_rule, ''),
+			COALESCE(e.cancellation_policy::text, ''),
+			COALESCE(e.avg_rating, 0),
+			COALESCE(e.total_bookings, 0),
+			COALESCE(e.total_reviews, 0),
 			e.created_at,
 			COALESCE(e.status::text, ''),
 			COALESCE(h.id::text, ''),
 			COALESCE(h.first_name, ''),
 			COALESCE(h.last_name, ''),
 			COALESCE(h.tagline, ''),
-			COALESCE(h.city, '')
+			COALESCE(h.city, ''),
+			COALESCE(h.experience_desc, '')
 		FROM events e
 		LEFT JOIN hosts h ON h.id = e.host_id
 		LIMIT 1000
@@ -167,16 +186,39 @@ func (d *DataIngestionEngine) loadEvents(ctx context.Context) ([]Document, error
 	defer rows.Close()
 
 	for rows.Next() {
-		var id, title, description, category, location, status string
-		var hostID, hostFirstName, hostLastName, hostTagline, hostCity string
-		var createdAt time.Time
+		var id, title, hookLine, description, mood, location, meetingLink, mapsURL, recurrenceRule, cancellationPolicy, status string
+		var hostID, hostFirstName, hostLastName, hostTagline, hostCity, hostExperienceDesc string
+		var isOnline, isFree, isRecurring bool
+		var durationMinutes, minGroupSize, maxGroupSize, capacity, totalBookings, totalReviews int
+		var priceCents int64
+		var avgRating float64
+		var createdAt, startTime time.Time
+		var endTime sql.NullTime
 
 		if err := rows.Scan(
 			&id,
 			&title,
+			&hookLine,
 			&description,
-			&category,
+			&mood,
 			&location,
+			&isOnline,
+			&meetingLink,
+			&mapsURL,
+			&durationMinutes,
+			&minGroupSize,
+			&maxGroupSize,
+			&capacity,
+			&priceCents,
+			&isFree,
+			&startTime,
+			&endTime,
+			&isRecurring,
+			&recurrenceRule,
+			&cancellationPolicy,
+			&avgRating,
+			&totalBookings,
+			&totalReviews,
 			&createdAt,
 			&status,
 			&hostID,
@@ -184,6 +226,7 @@ func (d *DataIngestionEngine) loadEvents(ctx context.Context) ([]Document, error
 			&hostLastName,
 			&hostTagline,
 			&hostCity,
+			&hostExperienceDesc,
 		); err != nil {
 			continue
 		}
@@ -191,8 +234,13 @@ func (d *DataIngestionEngine) loadEvents(ctx context.Context) ([]Document, error
 		hostName := strings.TrimSpace(hostFirstName + " " + hostLastName)
 		contentLines := []string{
 			fmt.Sprintf("Event: %s", title),
-			fmt.Sprintf("Category: %s", category),
+			fmt.Sprintf("Mood: %s", mood),
 			fmt.Sprintf("Status: %s", status),
+			fmt.Sprintf("Online Event: %t", isOnline),
+			fmt.Sprintf("Free Event: %t", isFree),
+		}
+		if hookLine != "" {
+			contentLines = append(contentLines, fmt.Sprintf("Hook Line: %s", hookLine))
 		}
 		if hostName != "" {
 			contentLines = append(contentLines, fmt.Sprintf("Host: %s", hostName))
@@ -206,9 +254,48 @@ func (d *DataIngestionEngine) loadEvents(ctx context.Context) ([]Document, error
 		if location != "" {
 			contentLines = append(contentLines, fmt.Sprintf("Location: %s", location))
 		}
+		if meetingLink != "" {
+			contentLines = append(contentLines, fmt.Sprintf("Meeting Link: %s", meetingLink))
+		}
+		if mapsURL != "" {
+			contentLines = append(contentLines, fmt.Sprintf("Map URL: %s", mapsURL))
+		}
+		if durationMinutes > 0 {
+			contentLines = append(contentLines, fmt.Sprintf("Duration Minutes: %d", durationMinutes))
+		}
+		if minGroupSize > 0 {
+			contentLines = append(contentLines, fmt.Sprintf("Minimum Group Size: %d", minGroupSize))
+		}
+		if maxGroupSize > 0 {
+			contentLines = append(contentLines, fmt.Sprintf("Maximum Group Size: %d", maxGroupSize))
+		}
+		if capacity > 0 {
+			contentLines = append(contentLines, fmt.Sprintf("Capacity: %d", capacity))
+		}
+		if !isFree && priceCents > 0 {
+			contentLines = append(contentLines, fmt.Sprintf("Price (cents): %d", priceCents))
+		}
+		contentLines = append(contentLines, fmt.Sprintf("Starts At: %s", startTime.Format(time.RFC3339)))
+		if endTime.Valid {
+			contentLines = append(contentLines, fmt.Sprintf("Ends At: %s", endTime.Time.Format(time.RFC3339)))
+		}
+		if isRecurring {
+			contentLines = append(contentLines, fmt.Sprintf("Recurring Rule: %s", recurrenceRule))
+		}
+		if cancellationPolicy != "" {
+			contentLines = append(contentLines, fmt.Sprintf("Cancellation Policy: %s", cancellationPolicy))
+		}
+		if hostExperienceDesc != "" {
+			contentLines = append(contentLines, fmt.Sprintf("Host Experience Focus: %s", hostExperienceDesc))
+		}
 		if description != "" {
 			contentLines = append(contentLines, fmt.Sprintf("Description: %s", description))
 		}
+		contentLines = append(contentLines,
+			fmt.Sprintf("Average Rating: %.2f", avgRating),
+			fmt.Sprintf("Total Bookings: %d", totalBookings),
+			fmt.Sprintf("Total Reviews: %d", totalReviews),
+		)
 		contentLines = append(contentLines, fmt.Sprintf("Created: %s", createdAt.Format("2006-01-02")))
 
 		doc := Document{
@@ -218,7 +305,7 @@ func (d *DataIngestionEngine) loadEvents(ctx context.Context) ([]Document, error
 				"source":   "events",
 				"event_id": id,
 				"title":    title,
-				"category": category,
+				"mood":     mood,
 				"status":   status,
 			},
 		}
@@ -250,15 +337,30 @@ func (d *DataIngestionEngine) loadHosts(ctx context.Context) ([]Document, error)
 			COALESCE(bio, ''),
 			COALESCE(experience_desc, ''),
 			COALESCE(description, ''),
+			COALESCE(array_to_string(moods, ', '), ''),
+			COALESCE(array_to_string(preferred_days, ', '), ''),
 			COALESCE(array_to_string(expertise_tags, ', '), ''),
 			COALESCE(application_status::text, ''),
 			COALESCE(avg_rating, 0),
 			COALESCE(total_reviews, 0),
 			is_identity_verified,
 			is_super_host,
+			is_community_champ,
+			COALESCE(social_instagram, ''),
+			COALESCE(social_linkedin, ''),
+			COALESCE(social_website, ''),
+			(
+				SELECT COUNT(*)
+				FROM events e
+				WHERE e.host_id = hosts.id
+			) AS total_events,
+			(
+				SELECT COUNT(*)
+				FROM events e
+				WHERE e.host_id = hosts.id AND e.status = 'live'
+			) AS live_events,
 			created_at
 		FROM hosts
-		WHERE application_status = 'approved'
 		LIMIT 500
 	`)
 	if err != nil {
@@ -267,10 +369,12 @@ func (d *DataIngestionEngine) loadHosts(ctx context.Context) ([]Document, error)
 	defer rows.Close()
 
 	for rows.Next() {
-		var id, userID, firstName, lastName, city, tagline, bio, experienceDesc, description, expertiseTags, applicationStatus string
+		var id, userID, firstName, lastName, city, tagline, bio, experienceDesc, description string
+		var moods, preferredDays, expertiseTags, applicationStatus string
+		var socialInstagram, socialLinkedin, socialWebsite string
 		var avgRating float64
-		var totalReviews int
-		var isIdentityVerified, isSuperHost bool
+		var totalReviews, totalEvents, liveEvents int
+		var isIdentityVerified, isSuperHost, isCommunityChamp bool
 		var createdAt time.Time
 
 		if err := rows.Scan(
@@ -283,12 +387,20 @@ func (d *DataIngestionEngine) loadHosts(ctx context.Context) ([]Document, error)
 			&bio,
 			&experienceDesc,
 			&description,
+			&moods,
+			&preferredDays,
 			&expertiseTags,
 			&applicationStatus,
 			&avgRating,
 			&totalReviews,
 			&isIdentityVerified,
 			&isSuperHost,
+			&isCommunityChamp,
+			&socialInstagram,
+			&socialLinkedin,
+			&socialWebsite,
+			&totalEvents,
+			&liveEvents,
 			&createdAt,
 		); err != nil {
 			continue
@@ -312,14 +424,32 @@ func (d *DataIngestionEngine) loadHosts(ctx context.Context) ([]Document, error)
 		if description != "" {
 			contentLines = append(contentLines, fmt.Sprintf("Description: %s", description))
 		}
+		if moods != "" {
+			contentLines = append(contentLines, fmt.Sprintf("Moods: %s", moods))
+		}
+		if preferredDays != "" {
+			contentLines = append(contentLines, fmt.Sprintf("Preferred Days: %s", preferredDays))
+		}
 		if expertiseTags != "" {
 			contentLines = append(contentLines, fmt.Sprintf("Expertise Tags: %s", expertiseTags))
+		}
+		if socialInstagram != "" {
+			contentLines = append(contentLines, fmt.Sprintf("Instagram: %s", socialInstagram))
+		}
+		if socialLinkedin != "" {
+			contentLines = append(contentLines, fmt.Sprintf("LinkedIn: %s", socialLinkedin))
+		}
+		if socialWebsite != "" {
+			contentLines = append(contentLines, fmt.Sprintf("Website: %s", socialWebsite))
 		}
 		contentLines = append(contentLines,
 			fmt.Sprintf("Average Rating: %.2f", avgRating),
 			fmt.Sprintf("Total Reviews: %d", totalReviews),
 			fmt.Sprintf("Identity Verified: %t", isIdentityVerified),
 			fmt.Sprintf("Super Host: %t", isSuperHost),
+			fmt.Sprintf("Community Champ: %t", isCommunityChamp),
+			fmt.Sprintf("Total Events: %d", totalEvents),
+			fmt.Sprintf("Live Events: %d", liveEvents),
 			fmt.Sprintf("Joined: %s", createdAt.Format("2006-01-02")),
 		)
 
