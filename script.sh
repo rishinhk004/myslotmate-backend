@@ -73,14 +73,14 @@ upstream myslotmate_backend {
 
 server {
     listen 80;
-    server_name api.myslotmate.com;
+    server_name api.myslotmate.com www.api.myslotmate.com;
     client_max_body_size 50M;
 
     gzip on;
     gzip_types text/plain text/css text/javascript application/json application/javascript;
 
     location / {
-        proxy_pass http://myslotmate_backend;
+        proxy_pass http://api.myslotmate.com;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
