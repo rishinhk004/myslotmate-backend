@@ -24,6 +24,7 @@ import (
 	"myslotmate-backend/internal/lib/notification"
 	"myslotmate-backend/internal/lib/payment"
 	"myslotmate-backend/internal/lib/payout"
+	"myslotmate-backend/internal/lib/rag"
 	"myslotmate-backend/internal/lib/realtime"
 	"myslotmate-backend/internal/lib/storage"
 	"myslotmate-backend/internal/lib/worker"
@@ -208,6 +209,23 @@ func main() {
 	adminController := controller.NewAdminController(hostService, payoutService, fbApp.Auth, cfg.AdminEmail)
 	blogController := controller.NewBlogController(blogRepo, fbApp.Auth, cfg.AdminEmail)
 
+	// Initialize RAG components
+	ragEngine := rag.NewRAGEngine(
+		dbConn,
+		cfg.Gemini.APIKey,
+		cfg.Gemini.EmbeddingDimension,
+		cfg.Pinecone.APIKey,
+		cfg.Pinecone.Host,
+		cfg.Pinecone.IndexName,
+		10, // topK results
+		20, // maxMemory messages
+	)
+	ragChatCtrl := controller.NewRAGChatController(ragEngine)
+
+	// Initialize RAG Document components
+	docStore := rag.NewDocumentStore(dbConn)
+	ragDocCtrl := controller.NewRAGDocumentController(docStore)
+
 	router := server.NewRouter(
 		fbApp,
 		socketService,
@@ -223,6 +241,8 @@ func main() {
 		uploadController,
 		adminController,
 		blogController,
+		ragChatCtrl,
+		ragDocCtrl,
 	)
 
 	srv := &http.Server{

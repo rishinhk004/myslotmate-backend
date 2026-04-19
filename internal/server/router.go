@@ -49,6 +49,8 @@ func NewRouter(
 	uploadCtrl *controller.UploadController,
 	adminCtrl *controller.AdminController,
 	blogCtrl *controller.BlogController,
+	ragChatCtrl *controller.RAGChatController,
+	ragDocCtrl *controller.RAGDocumentController,
 ) http.Handler {
 	r := chi.NewRouter()
 
@@ -128,6 +130,23 @@ func NewRouter(
 
 	if blogCtrl != nil {
 		blogCtrl.RegisterRoutes(r)
+	}
+
+	if ragChatCtrl != nil {
+		// RAG Chatbot routes
+		r.Route("/api/chat/rag", func(r chi.Router) {
+			r.Post("/", ragChatCtrl.Chat)
+			r.Post("/clear", ragChatCtrl.ClearChat)
+			r.Post("/delete", ragChatCtrl.DeleteChat)
+		})
+		r.Post("/api/admin/rag/ingest", ragChatCtrl.IngestData)
+	}
+
+	// RAG Document routes (added after ragChatCtrl check)
+	if ragDocCtrl != nil {
+		r.Post("/api/upload/rag-document", ragDocCtrl.UploadDocument)
+		r.Get("/api/admin/rag/documents", ragDocCtrl.ListDocuments)
+		r.Delete("/api/admin/rag/documents/{id}", ragDocCtrl.DeleteDocument)
 	}
 
 	return r
