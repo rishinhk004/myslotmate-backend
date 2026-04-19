@@ -34,7 +34,7 @@ echo -e "${GREEN}✅ PM2 and Nginx ready${NC}"
 
 # Step 1: Git Pull
 echo -e "${YELLOW}📥 Step 1: Pulling latest changes from Git...${NC}"
-git pull origin main
+git pull origin main --rebase
 echo -e "${GREEN}✅ Git pull completed${NC}"
 
 # Step 2: Go Get
