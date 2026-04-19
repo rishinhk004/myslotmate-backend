@@ -13,7 +13,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-APP_NAME="myslotmate-backend"
+APP_NAME="myslotmate-api"
 APP_PORT=${HTTP_PORT:-5000}
 NGINX_CONF="/etc/nginx/sites-available/$APP_NAME"
 NGINX_ENABLED="/etc/nginx/sites-enabled/$APP_NAME"
@@ -49,7 +49,7 @@ echo -e "${GREEN}✅ Migrations completed${NC}"
 
 # Step 4: Build
 echo -e "${YELLOW}🔨 Step 4: Building the application...${NC}"
-go build -o $APP_NAME ./cmd/api/run.go
+go build -tags netgo -ldflags '-s -w' -o $APP_NAME ./cmd/api
 echo -e "${GREEN}✅ Build completed${NC}"
 
 # Step 5: Stop old PM2 process (if running)
