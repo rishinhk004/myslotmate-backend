@@ -21,9 +21,9 @@ NGINX_ENABLED="/etc/nginx/sites-enabled/$APP_NAME"
 # Step 0: Install PM2 & Nginx (if not already installed)
 echo -e "${YELLOW}📦 Step 0: Installing PM2 and Nginx...${NC}"
 if ! command -v pm2 &> /dev/null; then
-  npm install -g pm2
-  pm2 startup
-  pm2 save
+  sudo npm install -g pm2
+  sudo pm2 startup
+  sudo pm2 save
 fi
 
 if ! command -v nginx &> /dev/null; then
@@ -54,13 +54,13 @@ echo -e "${GREEN}✅ Build completed${NC}"
 
 # Step 5: Stop old PM2 process (if running)
 echo -e "${YELLOW}🛑 Step 5: Stopping old PM2 process...${NC}"
-pm2 delete $APP_NAME 2>/dev/null || true
+sudo pm2 delete $APP_NAME 2>/dev/null || true
 echo -e "${GREEN}✅ Old process stopped${NC}"
 
 # Step 6: Start with PM2
 echo -e "${YELLOW}▶️  Step 6: Starting application with PM2...${NC}"
-pm2 start ./$APP_NAME --name=$APP_NAME --instances=max --exec-mode=cluster
-pm2 save
+sudo pm2 start ./$APP_NAME --name=$APP_NAME --instances=max --exec-mode=cluster
+sudo pm2 save
 echo -e "${GREEN}✅ Application started with PM2${NC}"
 
 # Step 7: Configure Nginx Reverse Proxy
@@ -112,14 +112,14 @@ echo -e "${GREEN}✅ Nginx reloaded${NC}"
 # Step 10: Verify Status
 echo -e "${BLUE}📊 Step 10: Verification${NC}"
 echo -e "${BLUE}PM2 Status:${NC}"
-pm2 status
+sudo pm2 status
 echo -e "\n${BLUE}Nginx Status:${NC}"
 sudo systemctl status nginx --no-pager
 
 echo -e "\n${GREEN}✅ Deployment Complete!${NC}"
-echo -e "${BLUE}Visit http://localhost or your domain to access the API${NC}"
-echo -e "${YELLOW}PM2 Commands:${NC}"
-echo -e "  pm2 logs $APP_NAME        - View logs"
-echo -e "  pm2 restart $APP_NAME     - Restart app"
-echo -e "  pm2 stop $APP_NAME        - Stop app"
-echo -e "  pm2 monit                 - Monitor resources"
+echo -e "${BLUE}Visit http://api.myslotmate.com to access the API${NC}"
+echo -e "${YELLOW}PM2 Commands (use sudo):${NC}"
+echo -e "  sudo pm2 logs $APP_NAME        - View logs"
+echo -e "  sudo pm2 restart $APP_NAME     - Restart app"
+echo -e "  sudo pm2 stop $APP_NAME        - Stop app"
+echo -e "  sudo pm2 monit                 - Monitor resources"
