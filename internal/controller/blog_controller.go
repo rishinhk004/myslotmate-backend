@@ -17,14 +17,16 @@ import (
 // BlogController handles HTTP requests for blog operations
 type BlogController struct {
 	blogRepo     repository.BlogRepository
+	userRepo     repository.UserRepository
 	firebaseAuth *fbauth.Client
 	adminEmail   string
 }
 
 // NewBlogController Factory for BlogController
-func NewBlogController(br repository.BlogRepository, fa *fbauth.Client, adminEmail string) *BlogController {
+func NewBlogController(br repository.BlogRepository, ur repository.UserRepository, fa *fbauth.Client, adminEmail string) *BlogController {
 	return &BlogController{
 		blogRepo:     br,
+		userRepo:     ur,
 		firebaseAuth: fa,
 		adminEmail:   adminEmail,
 	}
@@ -78,7 +80,23 @@ func (c *BlogController) CreateBlog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get admin email from context
-	email, _ := r.Context().Value(auth.ContextKeyEmail).(string)
+	// email, _ := r.Context().Value(auth.ContextKeyEmail).(string)
+	authUID, _ := r.Context().Value(auth.ContextKeyUID).(string)
+
+	if authUID == "" {
+		RespondError(w, http.StatusUnauthorized, "missing authenticated admin uid")
+		return
+	}
+
+	adminUser, err := c.userRepo.GetByAuthUID(r.Context(), authUID)
+	if err != nil {
+		RespondError(w, http.StatusInternalServerError, "failed to resolve admin user")
+		return
+	}
+	if adminUser == nil {
+		RespondError(w, http.StatusBadRequest, "Blog creation failed because the admin account is authenticated but its app user record is out of sync. Sign in with the admin email and finish signup once, then retry.")
+		return
+	}
 
 	// Set default read time if not provided
 	if req.ReadTimeMinutes == 0 {
@@ -92,9 +110,8 @@ func (c *BlogController) CreateBlog(w http.ResponseWriter, r *http.Request) {
 		Content:         req.Content,
 		CoverImageURL:   req.CoverImageURL,
 		ReadTimeMinutes: req.ReadTimeMinutes,
-		AuthorName:      email,
-		// AuthorID will be set after we fetch the admin user - for now we'll use a placeholder
-		// In production, you might want to fetch this from Firebase or have a separate admin user record
+		AuthorID:        adminUser.ID,
+		AuthorName:      adminUser.Name,
 	}
 
 	if err := c.blogRepo.Create(r.Context(), blog); err != nil {

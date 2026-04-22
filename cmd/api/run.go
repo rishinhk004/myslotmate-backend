@@ -207,7 +207,7 @@ func main() {
 	supportController := controller.NewSupportController(supportService, uploadService)
 	uploadController := controller.NewUploadController(uploadService)
 	adminController := controller.NewAdminController(hostService, payoutService, fbApp.Auth, cfg.AdminEmail)
-	blogController := controller.NewBlogController(blogRepo, fbApp.Auth, cfg.AdminEmail)
+	blogController := controller.NewBlogController(blogRepo, userRepo, fbApp.Auth, cfg.AdminEmail)
 
 	// Initialize RAG components
 	ragEngine := rag.NewRAGEngine(
