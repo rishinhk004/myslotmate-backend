@@ -59,6 +59,12 @@ type HostApplicationRequest struct {
 	PreferredDays   []string `json:"preferred_days,omitempty"`
 	GroupSize       *int     `json:"group_size,omitempty"`
 	GovernmentIDURL *string  `json:"government_id_url,omitempty"`
+	AvatarURL       *string  `json:"avatar_url,omitempty"`
+	Tagline         *string  `json:"tagline,omitempty"`
+	Bio             *string  `json:"bio,omitempty"`
+	SocialInstagram *string  `json:"social_instagram,omitempty"`
+	SocialLinkedin  *string  `json:"social_linkedin,omitempty"`
+	SocialWebsite   *string  `json:"social_website,omitempty"`
 }
 
 // HostProfileUpdateRequest maps to the Host Profile edit screen.
@@ -196,6 +202,12 @@ func (s *hostService) saveHostApplication(ctx context.Context, userID uuid.UUID,
 		existing.PreferredDays = pq.StringArray(req.PreferredDays)
 		existing.GroupSize = req.GroupSize
 		existing.GovernmentIDURL = req.GovernmentIDURL
+		existing.AvatarURL = req.AvatarURL
+		existing.Tagline = req.Tagline
+		existing.Bio = req.Bio
+		existing.SocialInstagram = req.SocialInstagram
+		existing.SocialLinkedin = req.SocialLinkedin
+		existing.SocialWebsite = req.SocialWebsite
 		existing.ApplicationStatus = status
 		if status == models.HostApplicationPending {
 			existing.SubmittedAt = &now
@@ -214,6 +226,9 @@ func (s *hostService) saveHostApplication(ctx context.Context, userID uuid.UUID,
 		LastName:          req.LastName,
 		PhnNumber:         user.PhnNumber,
 		City:              req.City,
+		AvatarURL:         req.AvatarURL,
+		Tagline:           req.Tagline,
+		Bio:               req.Bio,
 		ApplicationStatus: status,
 		ExperienceDesc:    req.ExperienceDesc,
 		Moods:             pq.StringArray(req.Moods),
@@ -221,6 +236,9 @@ func (s *hostService) saveHostApplication(ctx context.Context, userID uuid.UUID,
 		PreferredDays:     pq.StringArray(req.PreferredDays),
 		GroupSize:         req.GroupSize,
 		GovernmentIDURL:   req.GovernmentIDURL,
+		SocialInstagram:   req.SocialInstagram,
+		SocialLinkedin:    req.SocialLinkedin,
+		SocialWebsite:     req.SocialWebsite,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}

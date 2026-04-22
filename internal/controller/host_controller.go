@@ -73,6 +73,9 @@ type HostApplicationRequestBody struct {
 	AvatarURL       *string   `json:"avatar_url,omitempty"`
 	Tagline         *string   `json:"tagline,omitempty"`
 	Bio             *string   `json:"bio,omitempty"`
+	SocialInstagram *string   `json:"social_instagram,omitempty"`
+	SocialLinkedin  *string   `json:"social_linkedin,omitempty"`
+	SocialWebsite   *string   `json:"social_website,omitempty"`
 }
 
 type HostProfileUpdateRequestBody struct {
@@ -219,6 +222,12 @@ func (c *HostController) SubmitApplication(w http.ResponseWriter, r *http.Reques
 		PreferredDays:   req.PreferredDays,
 		GroupSize:       req.GroupSize,
 		GovernmentIDURL: req.GovernmentIDURL,
+		AvatarURL:       req.AvatarURL,
+		Tagline:         req.Tagline,
+		Bio:             req.Bio,
+		SocialInstagram: req.SocialInstagram,
+		SocialLinkedin:  req.SocialLinkedin,
+		SocialWebsite:   req.SocialWebsite,
 	}
 
 	host, err := c.hostService.SubmitApplication(r.Context(), req.UserID, svcReq)
@@ -247,6 +256,12 @@ func (c *HostController) SaveDraft(w http.ResponseWriter, r *http.Request) {
 		PreferredDays:   req.PreferredDays,
 		GroupSize:       req.GroupSize,
 		GovernmentIDURL: req.GovernmentIDURL,
+		AvatarURL:       req.AvatarURL,
+		Tagline:         req.Tagline,
+		Bio:             req.Bio,
+		SocialInstagram: req.SocialInstagram,
+		SocialLinkedin:  req.SocialLinkedin,
+		SocialWebsite:   req.SocialWebsite,
 	}
 
 	host, err := c.hostService.SaveDraft(r.Context(), req.UserID, svcReq)
